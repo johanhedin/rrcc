@@ -45,7 +45,7 @@ jobs:
       - name: Prepare container
         run: dnf -y -q install tar gzip
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
         run: ci/install-deps.sh
