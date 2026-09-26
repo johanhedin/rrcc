@@ -14,7 +14,10 @@ metadata and, with `--checksum`, the packages are downloaded; the presence and
 size of each package is checked with a HEAD request. Connections are kept
 alive and several packages are checked in parallel, by default 8; change that
 with `--jobs`. A proxy is used if it is set in the `http_proxy`/`https_proxy`
-environment variables, except for hosts listed in `no_proxy`.
+environment variables, except for hosts listed in `no_proxy`. For HTTPS, the
+CA certificates and a client certificate can be given with `--ca-cert`,
+`--client-cert` and `--client-key`, for example to check the RHEL CDN with
+an entitlement certificate.
 
 With `--newest-only` only the latest version of each package is checked,
 which is what you want for a mirror made with `dnf reposync --newest-only`.

@@ -3,7 +3,27 @@
 _rrcc()
 {
     local cur="${COMP_WORDS[COMP_CWORD]}"
-    local opts="-h --help --top-level --checksum --extra -n --newest-only -j --jobs -v --verbose --version"
+    local prev="${COMP_WORDS[COMP_CWORD-1]}"
+    local opts="-h --help --top-level --checksum --extra -n --newest-only -j --jobs
+                --ca-cert --client-cert --client-key -k --insecure -v --verbose --version"
+
+    compopt -o filenames 2>/dev/null
+    case $prev in
+        --ca-cert)
+            # a PEM file or a directory of CA certificates
+            COMPREPLY=( $(compgen -f -- "$cur") )
+            return 0
+            ;;
+        --client-cert|--client-key)
+            COMPREPLY=( $(compgen -f -- "$cur") )
+            return 0
+            ;;
+        -j|--jobs)
+            compopt +o filenames 2>/dev/null
+            COMPREPLY=()
+            return 0
+            ;;
+    esac
 
     if [[ $cur == -* ]]; then
         COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
@@ -11,7 +31,6 @@ _rrcc()
     fi
 
     # Positional arguments are repo root directories (URLs are not completed)
-    compopt -o filenames 2>/dev/null
     COMPREPLY=( $(compgen -d -- "$cur") )
     return 0
 }

@@ -119,6 +119,40 @@ Print the version and exit.
 .TP
 .BR \-h ", " \-\-help
 Show a help message and exit.
+.SS "TLS options"
+These options only apply to repositories given as
+.I https://
+URLs.
+They correspond to the
+.BR sslcacert ,
+.BR sslclientcert ,
+.B sslclientkey
+and
+.B sslverify
+settings of a repository in
+.BR dnf.conf (5).
+.TP
+.BI \-\-ca\-cert " FILE"
+Trust only the CA certificates in the PEM file
+.IR FILE ,
+instead of the CA certificates of the system.
+.I FILE
+can also be a directory of CA certificates prepared with
+.BR "openssl rehash" .
+.TP
+.BI \-\-client\-cert " FILE"
+Authenticate to the server with the client certificate in the PEM file
+.IR FILE .
+The file can also contain the private key.
+.TP
+.BI \-\-client\-key " FILE"
+The private key for
+.BR \-\-client\-cert ,
+if it is in a separate PEM file.
+Encrypted private keys are not supported.
+.TP
+.BR \-k ", " \-\-insecure
+Do not verify the certificate of the server.
 .SH ENVIRONMENT
 .TP
 .BR http_proxy ", " https_proxy
@@ -206,6 +240,18 @@ Check a remote repository over HTTP:
 .RS
 .nf
 rrcc \-\-jobs 16 http://mirror.example.com/pub/epel/8/Modular/x86_64
+.fi
+.RE
+.PP
+Check a repository on the Red Hat CDN with the entitlement certificate of a
+registered system:
+.PP
+.RS
+.nf
+rrcc \-\-ca\-cert /etc/rhsm/ca/redhat\-uep.pem \\
+     \-\-client\-cert /etc/pki/entitlement/\fISERIAL\fR.pem \\
+     \-\-client\-key /etc/pki/entitlement/\fISERIAL\fR\-key.pem \\
+     https://cdn.redhat.com/content/dist/rhel9/9/x86_64/baseos/os
 .fi
 .RE
 .PP

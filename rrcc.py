@@ -50,6 +50,18 @@ Options:
                          this is also how many connections are used.
                          Ignored for directories.
     -v, --verbose        Print a line for every package checked.
+
+TLS options for https:// repos (named after the dnf repo settings sslcacert,
+sslclientcert, sslclientkey and sslverify):
+    --ca-cert FILE       Trust only the CA certificate(s) in this PEM file (or
+                         directory hashed by 'openssl rehash') instead of the
+                         system CAs. For the RHEL CDN: /etc/rhsm/ca/redhat-uep.pem
+    --client-cert FILE   Authenticate with this client certificate (PEM). For
+                         the RHEL CDN: /etc/pki/entitlement/<serial>.pem
+    --client-key FILE    Private key for --client-cert, unless it is in the
+                         same file. Encrypted keys are not supported. For the
+                         RHEL CDN: /etc/pki/entitlement/<serial>-key.pem
+    -k, --insecure       Don't verify the server certificate (sslverify=0).
     --version            Print the version and exit.
 
 If repomd.xml also lists a "primary_zck" entry (the zchunk-compressed copy
@@ -87,12 +99,14 @@ primary.xml compression formats that Python can't read by itself:
 import argparse
 import base64
 import contextlib
+import functools
 import gzip
 import hashlib
 import http.client
 import lzma
 import os
 import shutil
+import ssl
 import string
 import subprocess
 import sys
@@ -296,7 +310,8 @@ class HttpClient:
 
     MAX_REDIRECTS = 5
 
-    def __init__(self):
+    def __init__(self, ssl_context=None):
+        self._ssl_context = ssl_context  # None: the defaults of http.client
         self._local = threading.local()
         self._all = []  # every connection ever opened, so close() can reach them
         self._lock = threading.Lock()
@@ -336,7 +351,10 @@ class HttpClient:
         conns = self._local.__dict__.setdefault("conns", {})
         entry = conns.get((scheme, netloc))
         if entry is None:
-            cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+            if scheme == "https":
+                cls = functools.partial(http.client.HTTPSConnection, context=self._ssl_context)
+            else:
+                cls = http.client.HTTPConnection
             proxy = self._proxy_for(scheme, netloc)
             headers = {}
             if proxy is None:
@@ -404,16 +422,14 @@ class HttpRepo:
     hashing a streamed GET. Safe to use from several threads, except for
     metadata_path()."""
 
-    def __init__(self, url, client=None):
+    def __init__(self, url, ssl_context=None):
         self.root = normalize_url(url)
-        self._own_client = client is None
-        self.client = HttpClient() if client is None else client
+        self.client = HttpClient(ssl_context)
         self._tmpdir = None
         self._downloads = {}  # href -> local path (None if missing on the server)
 
     def close(self):
-        if self._own_client:
-            self.client.close()
+        self.client.close()
         if self._tmpdir is not None:
             shutil.rmtree(self._tmpdir, ignore_errors=True)
             self._tmpdir = None
@@ -505,8 +521,58 @@ def walk_http(client, top, skip_repodata=False):
             todo.append(d)
 
 
-def open_repo(root):
-    return HttpRepo(root) if is_url(root) else LocalRepo(root)
+def open_repo(root, ssl_context=None):
+    return HttpRepo(root, ssl_context) if is_url(root) else LocalRepo(root)
+
+
+def make_ssl_context(args):
+    """Build the TLS settings for https:// repos from the command line, or
+    return None for the defaults (system CAs, no client certificate).
+    Raises ValueError with a message for unusable files."""
+    if not (args.ca_cert or args.client_cert or args.client_key or args.insecure):
+        return None
+    if args.client_key and not args.client_cert:
+        raise ValueError("--client-key needs --client-cert")
+
+    def no_password():
+        raise ValueError(f"{args.client_key or args.client_cert}: "
+                         "encrypted private keys are not supported")
+
+    def load(option, filename, func, *func_args, **kwargs):
+        """Call func, turning a failure into a message that names the file."""
+        if not os.path.exists(filename):
+            raise ValueError(f"{option} {filename}: no such file or directory")
+        try:
+            return func(*func_args, **kwargs)
+        except (OSError, ssl.SSLError) as e:
+            raise ValueError(f"{option} {filename}: {getattr(e, 'reason', None) or e}")
+
+    if args.ca_cert is None:
+        ctx = ssl.create_default_context()
+    elif os.path.isdir(args.ca_cert):
+        ctx = load("--ca-cert", args.ca_cert, ssl.create_default_context, capath=args.ca_cert)
+    else:
+        ctx = load("--ca-cert", args.ca_cert, ssl.create_default_context, cafile=args.ca_cert)
+    if args.insecure:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    if args.client_cert:
+        if args.client_key and not os.path.exists(args.client_key):
+            raise ValueError(f"--client-key {args.client_key}: no such file or directory")
+        try:
+            load("--client-cert", args.client_cert, ctx.load_cert_chain,
+                 args.client_cert, args.client_key, password=no_password)
+        except ValueError as e:
+            if "KEY_VALUES_MISMATCH" in str(e):
+                raise ValueError(f"--client-key {args.client_key}: "
+                                 f"does not belong to the certificate in {args.client_cert}")
+            if "PEM lib" in str(e):
+                raise ValueError(f"--client-cert {args.client_cert}: cannot read a certificate "
+                                 + ("and private key from the file (give the key with --client-key "
+                                    "if it is in a separate file)" if args.client_key is None else
+                                    f"from it, or the key from {args.client_key}"))
+            raise
+    return ctx
 
 
 def find_data_location(repo, data_type, required=True):
@@ -781,13 +847,13 @@ def verify_checksum(f, algo_name, expected_hex):
     return h.hexdigest() == expected_hex
 
 
-def find_http_repos(top_url):
+def find_http_repos(top_url, ssl_context=None):
     """Like find_repos(), but for a directory URL: follows the web server's
     directory listings and returns the URLs (with trailing slash) of the
     repos found."""
     repos = []
     todo = [normalize_url(top_url)]
-    client = HttpClient()
+    client = HttpClient(ssl_context)
     try:
         while todo:
             url = todo.pop()
@@ -806,11 +872,11 @@ def find_http_repos(top_url):
     return sorted(repos)
 
 
-def find_repos(top_level):
+def find_repos(top_level, ssl_context=None):
     """Recursively find directories under top_level that contain a valid
     repodata/repomd.xml. Does not descend into repodata/ itself."""
     if is_url(top_level):
-        return find_http_repos(top_level)
+        return find_http_repos(top_level, ssl_context)
     repos = []
     for dirpath, dirnames, _filenames in os.walk(top_level):
         if "repodata" in dirnames:
@@ -834,7 +900,7 @@ def check_one_repo(repo_root, args):
     On 'error', problems is a single-element list with the error message.
     notes is a list of informational lines about what else was checked.
     """
-    repo = open_repo(repo_root)
+    repo = open_repo(repo_root, args.ssl_context)
     try:
         return _check_one_repo(repo, args)
     except READ_ERRORS as e:
@@ -991,10 +1057,27 @@ def main():
     ap.add_argument("-j", "--jobs", type=positive_int, default=DEFAULT_JOBS, metavar="N",
                     help=f"number of packages to check in parallel for http(s):// repos "
                          f"(default: {DEFAULT_JOBS}; 1 disables parallelism); ignored for directories")
+    tls = ap.add_argument_group("TLS options for https:// repos (like sslcacert, sslclientcert, "
+                                "sslclientkey and sslverify in dnf)")
+    tls.add_argument("--ca-cert", metavar="FILE",
+                     help="trust only the CA certificate(s) in this PEM file, or in this directory "
+                          "(hashed as by openssl rehash), instead of the system CAs")
+    tls.add_argument("--client-cert", metavar="FILE",
+                     help="authenticate with this client certificate (PEM), e.g. an entitlement "
+                          "certificate in /etc/pki/entitlement/ for the RHEL CDN")
+    tls.add_argument("--client-key", metavar="FILE",
+                     help="private key for --client-cert (PEM, not encrypted), if it isn't "
+                          "in the --client-cert file")
+    tls.add_argument("-k", "--insecure", action="store_true",
+                     help="don't verify the server certificate (like sslverify=0)")
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--version", action="version", version=f"rrcc {__version__}",
                     help="print the version and exit")
     args = ap.parse_args()
+    try:
+        args.ssl_context = make_ssl_context(args)
+    except ValueError as e:
+        ap.error(str(e))
 
     overall_problem = False
     overall_error = False
@@ -1013,7 +1096,7 @@ def main():
         top_path = normalize_url(path) if is_url(path) else os.path.abspath(path)
         if args.top_level:
             try:
-                found = find_repos(top_path)
+                found = find_repos(top_path, args.ssl_context)
             except OSError as e:
                 print(f"ERROR: cannot search {top_path}: {type(e).__name__}: {e}", file=sys.stderr)
                 overall_error = True
