@@ -50,8 +50,12 @@ Options:
                          and architecture) listed in primary.xml, and skip the
                          older ones. Same as 'dnf reposync --newest-only', so
                          use it to check a mirror made that way. Modular
-                         repos are handled like dnf does it (the module
+                         repos are handled like dnf 4 does it (the module
                          metadata in modules.yaml is read).
+    --ignore-modules     With --newest-only, ignore the module metadata and
+                         just keep the latest version of each package, like
+                         dnf 5 (Fedora 41+) does. Use it for a mirror of a
+                         modular repo made with dnf 5's reposync.
     -j, --jobs N         Check N packages in parallel for a remote repo
                          (default 8, 1 disables parallelism). Each worker
                          keeps its own connection to the server alive, so
@@ -846,7 +850,8 @@ def read_modules(path):
 
 
 def newest_packages(packages, modules=()):
-    """Return the packages that 'dnf reposync --newest-only' would download:
+    """Return the packages that 'dnf reposync --newest-only' of dnf 4 would
+    download (dnf 5 ignores the modules, which is newest_packages(packages)):
 
     - the latest version of each non-modular package (per name and arch),
     - all rpms of the newest build of each module stream, and
@@ -1109,7 +1114,7 @@ def _check_one_repo(repo, args):
     if args.newest_only:
         modules = []
         modules_href = find_data_location(entries, "modules", required=False)
-        if modules_href is not None:
+        if modules_href is not None and not args.ignore_modules:
             modules_path = repo.metadata_path(modules_href)
             if modules_path is None:
                 return "error", 0, [f"modules metadata file listed in repomd.xml is missing: "
@@ -1117,7 +1122,8 @@ def _check_one_repo(repo, args):
             modules = read_modules(modules_path)
         to_check = newest_packages(packages, modules)
         notes.append(f"--newest-only: skipped {len(packages) - len(to_check)} older package(s), "
-                     f"{len(packages)} in metadata")
+                     f"{len(packages)} in metadata"
+                     + (", modules ignored" if args.ignore_modules and modules_href else ""))
     else:
         to_check = packages
 
@@ -1165,6 +1171,8 @@ def main():
     ap.add_argument("--extra", action="store_true", help="report on-disk RPMs not in metadata")
     ap.add_argument("-n", "--newest-only", action="store_true",
                     help="only check the latest version of each package (like dnf reposync --newest-only)")
+    ap.add_argument("--ignore-modules", action="store_true",
+                    help="with --newest-only: ignore module metadata, like dnf 5's reposync does")
     ap.add_argument("-j", "--jobs", type=positive_int, default=DEFAULT_JOBS, metavar="N",
                     help=f"number of packages to check in parallel for http(s):// repos "
                          f"(default: {DEFAULT_JOBS}; 1 disables parallelism); ignored for directories")
@@ -1185,6 +1193,8 @@ def main():
     ap.add_argument("--version", action="version", version=f"rrcc {__version__}",
                     help="print the version and exit")
     args = ap.parse_args()
+    if args.ignore_modules and not args.newest_only:
+        ap.error("--ignore-modules needs --newest-only")
     try:
         args.ssl_context = make_ssl_context(args)
     except ValueError as e:

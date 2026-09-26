@@ -104,8 +104,9 @@ This matches
 and is meant for checking a mirror made that way.
 The latest version is picked per package name and architecture.
 For repositories with modules (modular repositories) the same rules as in
+dnf 4, the
 .BR dnf (8)
-are used: the latest version of each non-modular package, all packages of the
+of RHEL 8 to 10, are used: the latest version of each non-modular package, all packages of the
 newest build of each module stream, and all packages of any older build of a
 stream that contains the latest version of one of its packages.
 The module metadata is then read from
@@ -116,6 +117,15 @@ reported by
 and are still included in the
 .I primary_zck
 cross-check.
+.TP
+.B \-\-ignore\-modules
+With
+.BR \-\-newest\-only ,
+ignore the module metadata and keep just the latest version of each package,
+modular or not.
+This is what the reposync of dnf 5 (Fedora 41 and newer) does, so use it to
+check a mirror of a modular repository made with dnf 5.
+For a repository without modules it makes no difference.
 .TP
 .BR \-j ", " \-\-jobs " \fIN\fR"
 Check

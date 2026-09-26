@@ -4,7 +4,7 @@ _rrcc()
 {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local opts="-h --help --top-level --checksum --extra -n --newest-only -j --jobs
+    local opts="-h --help --top-level --checksum --extra -n --newest-only --ignore-modules -j --jobs
                 --ca-cert --client-cert --client-key -k --insecure -v --verbose --version"
 
     compopt -o filenames 2>/dev/null
