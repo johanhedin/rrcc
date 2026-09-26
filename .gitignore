@@ -1,2 +1,3 @@
 man/rrcc.1
 __pycache__/
+ci/logs/
