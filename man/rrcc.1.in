@@ -119,6 +119,31 @@ Print the version and exit.
 .TP
 .BR \-h ", " \-\-help
 Show a help message and exit.
+.SH ENVIRONMENT
+.TP
+.BR http_proxy ", " https_proxy
+The proxy to use for repositories given as
+.I http://
+or
+.I https://
+URLs, in the form
+.IR http://host:port ,
+optionally with basic authentication as
+.IR http://user:password@host:port .
+The upper-case forms
+.B HTTP_PROXY
+and
+.B HTTPS_PROXY
+are also recognized.
+Only
+.I http://
+proxies are supported; HTTPS repositories are reached through a tunnel
+.RB ( CONNECT )
+in the proxy.
+.TP
+.B no_proxy
+Comma-separated list of host names, domains or addresses that are contacted
+directly instead of through the proxy.
 .SH EXIT STATUS
 .TP
 .B 0

@@ -13,7 +13,8 @@ instead of a directory, for example `rrcc http://host/path/to/repo`. Only the
 metadata and, with `--checksum`, the packages are downloaded; the presence and
 size of each package is checked with a HEAD request. Connections are kept
 alive and several packages are checked in parallel, by default 8; change that
-with `--jobs`.
+with `--jobs`. A proxy is used if it is set in the `http_proxy`/`https_proxy`
+environment variables, except for hosts listed in `no_proxy`.
 
 With `--newest-only` only the latest version of each package is checked,
 which is what you want for a mirror made with `dnf reposync --newest-only`.

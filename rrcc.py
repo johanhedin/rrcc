@@ -58,6 +58,12 @@ the plain primary: it must exist, be readable, and list exactly the same
 packages with the same sizes and checksums. This needs 'unzck' (see below),
 and is reported as a problem if the file can't be read.
 
+Proxy:
+    Remote repos are fetched through the proxy in the http_proxy and
+    https_proxy environment variables (or HTTP_PROXY/HTTPS_PROXY), except for
+    hosts in no_proxy. Only http:// proxies are supported, with optional
+    basic authentication given as http://user:password@proxy:port.
+
 Exit status:
     0   everything checked is consistent
     1   at least one problem found in at least one repo
@@ -79,6 +85,7 @@ primary.xml compression formats that Python can't read by itself:
 """
 
 import argparse
+import base64
 import contextlib
 import gzip
 import hashlib
@@ -92,6 +99,7 @@ import sys
 import tempfile
 import threading
 import xml.etree.ElementTree as ET
+import urllib.request
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
@@ -279,7 +287,12 @@ class HttpClient:
     """Minimal HTTP(S) client that keeps connections alive and can be used
     from several threads at once: every thread gets its own connection per
     server. Follows redirects and retries once on a connection that the
-    server closed while it was idle."""
+    server closed while it was idle.
+
+    Honors the http_proxy, https_proxy and no_proxy environment variables
+    (and their upper-case forms) like urllib and curl do. HTTP requests are
+    sent to the proxy with the full URL, HTTPS goes through a CONNECT tunnel.
+    User and password in the proxy URL are sent as basic authentication."""
 
     MAX_REDIRECTS = 5
 
@@ -287,6 +300,27 @@ class HttpClient:
         self._local = threading.local()
         self._all = []  # every connection ever opened, so close() can reach them
         self._lock = threading.Lock()
+        self._proxies = urllib.request.getproxies()
+
+    def _proxy_for(self, scheme, netloc):
+        """Return (proxy host:port, extra headers) for a server, or None
+        when it should be contacted directly."""
+        proxy = self._proxies.get(scheme)
+        if not proxy or urllib.request.proxy_bypass(netloc):
+            return None
+        if "://" not in proxy:
+            proxy = "http://" + proxy  # e.g. http_proxy=proxy.example.com:3128
+        parts = urlsplit(proxy)
+        if parts.scheme != "http":
+            raise RuntimeError(f"{scheme}_proxy={proxy}: only http:// proxies are supported")
+        if not parts.hostname:
+            raise RuntimeError(f"{scheme}_proxy={proxy}: no proxy host")
+        headers = {}
+        if parts.username is not None:
+            cred = f"{unquote(parts.username)}:{unquote(parts.password or '')}"
+            headers["Proxy-Authorization"] = "Basic " + base64.b64encode(cred.encode()).decode()
+        host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+        return f"{host}:{parts.port or 80}", headers
 
     def close(self):
         with self._lock:
@@ -295,14 +329,30 @@ class HttpClient:
             self._all.clear()
 
     def _connection(self, scheme, netloc):
+        """Return (connection, headers) for a server. headers are the extra
+        headers that each request must carry: the proxy credentials when
+        talking to an HTTP proxy, else none. A connection that has
+        _rrcc_via_proxy set takes the full URL as request target."""
         conns = self._local.__dict__.setdefault("conns", {})
-        conn = conns.get((scheme, netloc))
-        if conn is None:
+        entry = conns.get((scheme, netloc))
+        if entry is None:
             cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
-            conn = conns[(scheme, netloc)] = cls(netloc, timeout=HTTP_TIMEOUT)
+            proxy = self._proxy_for(scheme, netloc)
+            headers = {}
+            if proxy is None:
+                conn = cls(netloc, timeout=HTTP_TIMEOUT)
+            elif scheme == "https":
+                proxy_hostport, proxy_headers = proxy
+                conn = cls(proxy_hostport, timeout=HTTP_TIMEOUT)
+                conn.set_tunnel(netloc, headers=proxy_headers)
+            else:
+                proxy_hostport, headers = proxy
+                conn = cls(proxy_hostport, timeout=HTTP_TIMEOUT)
+            conn._rrcc_via_proxy = proxy is not None and scheme == "http"
+            entry = conns[(scheme, netloc)] = (conn, headers)
             with self._lock:
                 self._all.append(conn)
-        return conn
+        return entry
 
     @contextlib.contextmanager
     def open(self, url, method="GET"):
@@ -311,13 +361,16 @@ class HttpClient:
         the with block."""
         for _ in range(self.MAX_REDIRECTS + 1):
             parts = urlsplit(url)
+            conn, headers = self._connection(parts.scheme, parts.netloc)
             target = parts.path or "/"
             if parts.query:
                 target += "?" + parts.query
-            conn = self._connection(parts.scheme, parts.netloc)
+            if conn._rrcc_via_proxy:
+                target = f"{parts.scheme}://{parts.netloc}{target}"
+            headers = dict(headers, **{"User-Agent": f"rrcc/{__version__}"})
             for attempt in (0, 1):
                 try:
-                    conn.request(method, target, headers={"User-Agent": f"rrcc/{__version__}"})
+                    conn.request(method, target, headers=headers)
                     resp = conn.getresponse()
                     break
                 except (http.client.BadStatusLine, ConnectionError):
