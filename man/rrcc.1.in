@@ -16,6 +16,15 @@ must exist on disk and have the size recorded in the metadata.
 Optionally, the checksum of each package is verified as well and files on disk
 that are not referenced by the metadata are reported.
 .PP
+Every metadata file listed in
+.I repodata/repomd.xml
+(primary, filelists, other, updateinfo, comps, modules, and their sqlite and
+zchunk variants) is checked as well: it must exist and have the size and
+checksum recorded in
+.IR repomd.xml .
+A primary metadata file that does not match is an error, since the package
+list cannot be trusted.
+.PP
 A repository served over HTTP or HTTPS can be checked in the same way by
 giving its URL instead of a directory.
 The metadata is downloaded to a temporary directory, the presence and size of
@@ -71,6 +80,12 @@ variants, are mirrored under one parent directory.
 Also verify the checksum of every package.
 This is slow because every RPM file has to be read.
 Without this option only the presence and size of each package are checked.
+For a repository given as a URL, this also verifies the checksum of every
+metadata file, which means downloading all of them.
+Without it, only the metadata files that
+.B rrcc
+reads anyway have their checksum verified, and the others are checked for
+presence and size.
 .TP
 .B \-\-extra
 Also report

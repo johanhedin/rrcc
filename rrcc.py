@@ -6,6 +6,12 @@ Verify that a local RPM repository mirror is consistent with its own
 repodata: every package listed in primary.xml actually exists on disk
 (and, optionally, matches the recorded size/checksum).
 
+Every metadata file listed in repodata/repomd.xml (primary, filelists,
+other, updateinfo, comps, modules, the sqlite and zchunk variants, ...) is
+checked too: it must exist and match the size and checksum in repomd.xml.
+For a remote repository, files that rrcc doesn't read itself are only
+checked for presence and size, unless --checksum is given.
+
 Single repo:
     rrcc.py [options] /path/to/repo/root
 
@@ -34,6 +40,8 @@ Options:
                          multiple repos; auto-discover and check each one.
     --checksum           Verify checksums too (slow: reads every RPM).
                          Without this flag, only presence + size are checked.
+                         For a remote repo this also verifies the checksum of
+                         every metadata file, which downloads all of them.
     --extra              Also report *.rpm files on disk that are NOT
                          referenced by primary.xml (orphans / stale files).
                          For a URL this needs directory listings enabled on
@@ -267,6 +275,10 @@ class LocalRepo:
         path = self.locate(href)
         return path if os.path.isfile(path) else None
 
+    def has_local_copy(self, href):
+        """True if href can be read without downloading it."""
+        return True
+
     def package_size(self, href):
         """Size of the file href, or None if it does not exist."""
         path = self.locate(href)
@@ -453,7 +465,12 @@ class HttpRepo:
         self._downloads[href] = path
         return path
 
+    def has_local_copy(self, href):
+        return self._downloads.get(href) is not None
+
     def package_size(self, href):
+        if self.has_local_copy(href):
+            return os.path.getsize(self._downloads[href])
         try:
             with self.client.open(self.locate(href), "HEAD") as resp:
                 length = resp.getheader("Content-Length")
@@ -468,6 +485,9 @@ class HttpRepo:
             raise
 
     def package_checksum_ok(self, href, algo_name, expected_hex):
+        if self.has_local_copy(href):
+            with open(self._downloads[href], "rb") as f:
+                return verify_checksum(f, algo_name, expected_hex)
         with self.client.open(self.locate(href)) as resp:
             return verify_checksum(resp, algo_name, expected_hex)
 
@@ -575,22 +595,44 @@ def make_ssl_context(args):
     return ctx
 
 
-def find_data_location(repo, data_type, required=True):
-    """Return the href of the <data type="..."> entry in repomd.xml.
-    If there is no such entry, raise RuntimeError, or return None when
-    required is False."""
+def read_repomd(repo):
+    """Return the <data> entries of repomd.xml as dicts {type, href, size,
+    checksum_type, checksum}, with the same keys as iter_packages() uses
+    for the fields that describe a file. size and the checksum fields are
+    None if not given."""
     repomd_path = repo.metadata_path("repodata/repomd.xml")
     if repomd_path is None:
         raise RuntimeError(f"missing {repo.locate('repodata/repomd.xml')}")
 
-    tree = ET.parse(repomd_path)
-    root = tree.getroot()
-    for data_el in root.findall(f"{NS_REPO}data"):
-        if data_el.get("type") == data_type:
-            loc = data_el.find(f"{NS_REPO}location")
-            if loc is None or "href" not in loc.attrib:
-                raise RuntimeError(f"{data_type} <location> missing href in repomd.xml")
-            return loc.attrib["href"]
+    entries = []
+    for data_el in ET.parse(repomd_path).getroot().findall(f"{NS_REPO}data"):
+        data_type = data_el.get("type")
+        loc = data_el.find(f"{NS_REPO}location")
+        if loc is None or "href" not in loc.attrib:
+            raise RuntimeError(f"{data_type} <location> missing href in repomd.xml")
+        csum_el = data_el.find(f"{NS_REPO}checksum")
+        size_el = data_el.find(f"{NS_REPO}size")
+        try:
+            size = int(size_el.text) if size_el is not None else None
+        except (TypeError, ValueError):
+            raise RuntimeError(f"{data_type} has an invalid <size> in repomd.xml")
+        entries.append({
+            "type": data_type,
+            "href": loc.attrib["href"],
+            "size": size,
+            "checksum_type": csum_el.get("type") if csum_el is not None else None,
+            "checksum": csum_el.text.strip() if csum_el is not None and csum_el.text else None,
+        })
+    return entries
+
+
+def find_data_location(entries, data_type, required=True):
+    """Return the href of the entry of the given type in read_repomd()'s
+    entries. If there is no such entry, raise RuntimeError, or return None
+    when required is False."""
+    for entry in entries:
+        if entry["type"] == data_type:
+            return entry["href"]
     if required:
         raise RuntimeError(f'no <data type="{data_type}"> entry found in repomd.xml')
     return None
@@ -915,7 +957,7 @@ def _compare_primary_zck(repo, zck_href, plain):
     from the plain primary. Returns (problems, note)."""
     zck_path = repo.metadata_path(zck_href)
     if zck_path is None:
-        return [f"PRIMARY_ZCK MISSING: listed in repomd.xml but not on disk: {zck_href}"], None
+        return [], None  # reported by verify_metadata()
 
     problems = []
     zck_seen = set()
@@ -964,21 +1006,66 @@ def check_package(repo, pkg, verify):
     return pkg, None, True
 
 
-def check_packages(repo, packages, args):
+def check_packages(repo, packages, args, verify=None):
     """Yield check_package() results for the given packages, in order.
-    Remote repos are checked by args.jobs threads at a time; a local repo
-    is checked in the calling thread."""
+    verify(pkg) says whether to verify the checksum of a package; by
+    default args.checksum decides. Remote repos are checked by args.jobs
+    threads at a time; a local repo is checked in the calling thread."""
+    if verify is None:
+        def verify(pkg):
+            return args.checksum
+
+    def check(pkg):
+        return check_package(repo, pkg, verify(pkg))
+
     if args.jobs <= 1 or not isinstance(repo, HttpRepo):
-        for pkg in packages:
-            yield check_package(repo, pkg, args.checksum)
+        yield from map(check, packages)
         return
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        yield from pool.map(lambda pkg: check_package(repo, pkg, args.checksum), packages)
+        yield from pool.map(check, packages)
+
+
+def verify_metadata(repo, entries, args):
+    """Check that every file listed in repomd.xml exists and has the
+    recorded size and checksum. For a remote repo, only files that were
+    downloaded anyway get their checksum verified, unless --checksum is
+    given. Returns (problems, note)."""
+    files = []
+    seen = set()
+    for entry in entries:
+        if entry["href"] not in seen:  # a file could be listed twice
+            seen.add(entry["href"])
+            files.append(entry)
+
+    verified = set()
+
+    def verify(entry):
+        if args.checksum or repo.has_local_copy(entry["href"]):
+            verified.add(entry["href"])
+            return True
+        return False
+
+    problems = []
+    for entry, problem, is_ok in check_packages(repo, files, args, verify):
+        if problem:
+            problems.append(f"METADATA {problem} ({entry['type']})")
+        if is_ok and args.verbose:
+            print(f"  OK: {entry['href']}")
+
+    size_only = len(files) - len(verified)
+    note = f"{len(files)} metadata file(s) in repomd.xml checked"
+    if size_only:
+        note += (f" ({len(verified)} with checksum, {size_only} size only; "
+                 "--checksum verifies all)")
+    else:
+        note += " (size and checksum)"
+    return problems, note
 
 
 def _check_one_repo(repo, args):
     try:
-        primary_href = find_data_location(repo, "primary")
+        entries = read_repomd(repo)
+        primary_href = find_data_location(entries, "primary")
     except RuntimeError as e:
         return "error", 0, [str(e)], []
 
@@ -986,7 +1073,14 @@ def _check_one_repo(repo, args):
     if primary_path is None:
         return "error", 0, [f"primary metadata file listed in repomd.xml is missing: {repo.locate(primary_href)}"], []
 
-    zck_href = find_data_location(repo, "primary_zck", required=False)
+    # A primary that doesn't match repomd.xml can't be trusted to list the
+    # packages, and would likely fail to decompress with a confusing error.
+    primary_entry = next(e for e in entries if e["type"] == "primary")
+    _, problem, is_ok = check_package(repo, primary_entry, True)
+    if not is_ok:
+        return "error", 0, [f"primary metadata file does not match repomd.xml: {problem}"], []
+
+    zck_href = find_data_location(entries, "primary_zck", required=False)
 
     problems = []
     notes = []
@@ -1003,7 +1097,7 @@ def _check_one_repo(repo, args):
 
     if args.newest_only:
         modules = []
-        modules_href = find_data_location(repo, "modules", required=False)
+        modules_href = find_data_location(entries, "modules", required=False)
         if modules_href is not None:
             modules_path = repo.metadata_path(modules_href)
             if modules_path is None:
@@ -1030,6 +1124,12 @@ def _check_one_repo(repo, args):
         problems.extend(zck_problems)
         if note:
             notes.append(note)
+
+    # Last, so that a remote repo has downloaded what it needs by now and
+    # the checksums of those files come for free. Listed first, though.
+    meta_problems, note = verify_metadata(repo, entries, args)
+    problems[:0] = meta_problems
+    notes.insert(0, note)
 
     if args.extra:
         try:

@@ -3,6 +3,8 @@
   remote repositories again
 - Add TLS options for https:// repositories: --ca-cert, --client-cert,
   --client-key and --insecure (-k)
+- Check every metadata file listed in repomd.xml against its size and
+  checksum, not just primary
 
 * Sat Sep 26 2026 Johan Hedin - 1.2.1
 - Add --newest-only (-n) option to only check the latest packages
