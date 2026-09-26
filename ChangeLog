@@ -1,8 +1,10 @@
-* Sat Sep 26 2026 Johan Hedin - 1.x.y (not released yet)
+* Sat Sep 26 2026 Johan Hedin - 1.4.0
 - Add a test suite, run with 'make test' and 'make test-all'
 - Reuse the worker threads for all checks of a remote repository
 - Add --ignore-modules to use the --newest-only rules of dnf 5, which
   ignores modules, for mirrors made with dnf 5's reposync
+- Add GitHub CI workflow
+- Add local CI in Podman containers, run with make ci-local
 
 * Sat Sep 26 2026 Johan Hedin - 1.3.0
 - Honor the http_proxy, https_proxy and no_proxy environment variables

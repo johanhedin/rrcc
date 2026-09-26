@@ -131,7 +131,7 @@ from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from urllib.parse import quote, unquote, urldefrag, urljoin, urlsplit, urlunsplit
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 NS_REPO = "{http://linux.duke.edu/metadata/repo}"
 NS_COMMON = "{http://linux.duke.edu/metadata/common}"
