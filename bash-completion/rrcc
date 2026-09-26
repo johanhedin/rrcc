@@ -1,0 +1,19 @@
+# bash completion for rrcc (RPM Repository Consistency Checker)
+
+_rrcc()
+{
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    local opts="-h --help --top-level --checksum --extra -v --verbose --version"
+
+    if [[ $cur == -* ]]; then
+        COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+        return 0
+    fi
+
+    # Positional arguments are repo root directories
+    compopt -o filenames 2>/dev/null
+    COMPREPLY=( $(compgen -d -- "$cur") )
+    return 0
+}
+
+complete -F _rrcc rrcc
