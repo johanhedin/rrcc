@@ -1,0 +1,54 @@
+# Run the version check, the full test suite and an install test on every
+# supported distribution. The steps are in ci/ so that they can be run
+# locally the same way with 'make ci-local' (podman).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly, to catch changes in the distributions (new rpm, dnf, Python)
+    # even when nothing is pushed.
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep in sync with ALL in ci/podman.sh
+        include:
+          - name: rockylinux:8
+            image: docker.io/rockylinux/rockylinux:8
+          - name: rockylinux:9
+            image: docker.io/rockylinux/rockylinux:9
+          - name: rockylinux:10
+            image: docker.io/rockylinux/rockylinux:10
+          - name: fedora:43
+            image: registry.fedoraproject.org/fedora:43
+          - name: fedora:44
+            image: registry.fedoraproject.org/fedora:44
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      # Without git in the container, actions/checkout downloads a tarball
+      # and needs tar and gzip to unpack it.
+      - name: Prepare container
+        run: dnf -y -q install tar gzip
+
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: ci/install-deps.sh
+
+      - name: Run checks
+        run: ci/run-checks.sh

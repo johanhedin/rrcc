@@ -4,7 +4,8 @@
 # ChangeLog, which is the single source of truth. Entries without a numeric
 # version, e.g. "1.x.y (not released yet)", are skipped. The man page is
 # generated from man/rrcc.1.in and 'make check' verifies rrcc.py. 'make test'
-# runs the test suite in tests/, 'make test-all' also the slow tests.
+# runs the test suite in tests/, 'make test-all' also the slow tests, and
+# 'make ci-local' runs the CI of .github/workflows/ci.yml locally with podman.
 #
 # All settings can be overridden from the environment or the command line:
 #
@@ -48,7 +49,7 @@ BASHCOMP := bash-completion/$(PROGRAM)
 MAN1     := man/$(PROGRAM).1
 MAN1_IN  := $(MAN1).in
 
-.PHONY: all man check test test-all clean install uninstall help
+.PHONY: all man check test test-all ci-local clean install uninstall help
 
 all: help
 
@@ -58,6 +59,7 @@ help:
 	@echo "  check      Verify that rrcc.py and ChangeLog agree on version and date"
 	@echo "  test       Run the test suite (PYTHON=$(PYTHON))"
 	@echo "  test-all   Run the test suite including the slow tests (needs dnf)"
+	@echo "  ci-local   Run the CI in podman containers (CI_IMAGES=\"fedora:44 ...\")"
 	@echo "  clean      Remove generated files"
 	@echo "  install    Install $(PROGRAM), bash completion, man page and documentation"
 	@echo "  uninstall  Remove what 'make install' installed"
@@ -111,6 +113,9 @@ uninstall:
 	rm -f $(DESTDIR)$(MAN1DIR)/$(notdir $(MAN1)).gz
 	for f in $(DOCS); do rm -f $(DESTDIR)$(DOCDIR)/$$f; done
 	-rmdir $(DESTDIR)$(DOCDIR)
+
+ci-local:
+	ci/podman.sh $(CI_IMAGES)
 
 clean:
 	rm -f $(MAN1)

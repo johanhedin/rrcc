@@ -1,5 +1,7 @@
 # RPM Repository Consistency Checker
 
+[![CI](https://github.com/johanhedin/rrcc/actions/workflows/ci.yml/badge.svg)](https://github.com/johanhedin/rrcc/actions/workflows/ci.yml)
+
 This repository contains a Python script called `rrcc`, which stands
 for "RPM Repository Consistency Checker".
 
@@ -110,3 +112,17 @@ need `dnf` with its reposync plugin (`dnf-plugins-core` for dnf 4,
 
 The test certificates in `tests/support/pki/` are regenerated with
 `tests/support/make-pki.sh`.
+
+### Continuous integration
+
+GitHub Actions runs `make check`, `make test-all` and an install test on
+Rocky Linux 8, 9 and 10 and Fedora 43 and 44, with all optional dependencies
+installed, on every push and pull request and once a week. The steps are in
+`ci/`, and the same CI can be run locally in podman containers with:
+
+```
+make ci-local
+make ci-local CI_IMAGES="rockylinux:8 fedora:44"
+```
+
+The output of each container is kept in `ci/logs/`.
