@@ -242,6 +242,33 @@ package, which must be in
 .IR PATH .
 This works on any Python version.
 On RHEL and derivatives the package is in EPEL.
+.SH SECURITY
+The metadata of the repository, and the server it comes from, are treated as
+untrusted input.
+Locations in the metadata that are absolute, or that lead outside of the
+repository with
+.IR .. ,
+are refused and reported as problems, and are never opened or requested.
+Redirects are followed, but not from
+.I https://
+to
+.IR http:// ,
+and not to anything but
+.I http://
+and
+.IR https:// .
+What is downloaded is bounded by the sizes in the metadata, and names from the
+repository are printed with control characters escaped.
+.PP
+.B rrcc
+checks that a repository is consistent, not that it is authentic: it does not
+verify GPG signatures (of
+.I repomd.xml
+or of the packages), and it accepts the checksum algorithms that the metadata
+uses, including MD5 and SHA-1.
+Use
+.B \-\-insecure
+only for servers that you trust in some other way.
 .SH EXAMPLES
 Check a single repository for presence and size of all packages:
 .PP

@@ -117,6 +117,8 @@ import hashlib
 import http.client
 import lzma
 import os
+import posixpath
+import re
 import shutil
 import ssl
 import string
@@ -236,6 +238,12 @@ def open_zstd(path):
 HTTP_TIMEOUT = 60  # seconds
 DEFAULT_JOBS = 8   # parallel package checks for remote repos
 
+# The repository is untrusted input, so what is read from it is bounded.
+MAX_REPOMD_SIZE = 16 * 1024**2      # repomd.xml
+MAX_METADATA_SIZE = 4 * 1024**3     # a metadata file that repomd.xml gives no size for
+MAX_MODULES_SIZE = 1024**3          # modules.yaml, decompressed
+MAX_LISTING_DEPTH = 32              # directory levels followed in a web server's listings
+
 
 def positive_int(value):
     try:
@@ -258,6 +266,53 @@ def normalize_url(url):
     return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
+class UnsafeHrefError(OSError):
+    """A location in the metadata that points outside of the repository."""
+
+
+def check_href(href):
+    """Return href if it is a relative path that stays below the repo root,
+    else raise UnsafeHrefError. The metadata is untrusted: without this an
+    href like ../../etc/shadow or //other.host/x.rpm would make rrcc look at
+    files, or send requests, elsewhere."""
+    if (not href or "\0" in href or href.startswith("/")
+            or posixpath.normpath(href) in (".", "..")
+            or posixpath.normpath(href).startswith("../")):
+        raise UnsafeHrefError(f"refusing location outside of the repository: {href!r}")
+    return href
+
+
+_CONTROL_CHARS = re.compile("[\x00-\x1f\x7f-\x9f]")
+
+
+def printable(text):
+    """text with control characters (newlines, escape sequences, ...) made
+    visible, so that names from the metadata or the server can't fake lines
+    of the report or drive the terminal."""
+    return _CONTROL_CHARS.sub(lambda m: "\\x%02x" % ord(m.group()), str(text))
+
+
+def redact_url(url):
+    """url without any user name and password."""
+    parts = urlsplit(url)
+    if parts.username is None and parts.password is None:
+        return url
+    return urlunsplit((parts.scheme, parts.netloc.rpartition("@")[2],
+                       parts.path, parts.query, parts.fragment))
+
+
+def copy_limited(src, dst, limit):
+    """Copy at most limit bytes from src to dst, returning how many."""
+    copied = 0
+    while copied < limit:
+        chunk = src.read(min(1024 * 1024, limit - copied))
+        if not chunk:
+            break
+        dst.write(chunk)
+        copied += len(chunk)
+    return copied
+
+
 class LocalRepo:
     """A repository in a directory on disk. The methods below are what the
     checker needs from a repo, and are mirrored by HttpRepo. hrefs are the
@@ -270,12 +325,13 @@ class LocalRepo:
         pass
 
     def locate(self, href):
-        """Where href lives, for use in messages."""
-        return os.path.join(self.root, href)
+        """Where href lives, for use in messages. Raises UnsafeHrefError
+        for an href that is not inside the repository."""
+        return os.path.join(self.root, check_href(href))
 
-    def metadata_path(self, href):
+    def metadata_path(self, href, max_size=None):
         """Path of a local file with the contents of href, or None if the
-        file does not exist."""
+        file does not exist. max_size is only used for remote repos."""
         path = self.locate(href)
         return path if os.path.isfile(path) else None
 
@@ -283,12 +339,12 @@ class LocalRepo:
         """True if href can be read without downloading it."""
         return True
 
-    def package_size(self, href):
+    def package_size(self, href, max_size=None):
         """Size of the file href, or None if it does not exist."""
         path = self.locate(href)
         return os.path.getsize(path) if os.path.isfile(path) else None
 
-    def package_checksum_ok(self, href, algo_name, expected_hex):
+    def package_checksum_ok(self, href, algo_name, expected_hex, max_size=None):
         """True/False if the checksum of href matches, None if algo_name is
         not supported."""
         with open(self.locate(href), "rb") as f:
@@ -343,9 +399,9 @@ class HttpClient:
             proxy = "http://" + proxy  # e.g. http_proxy=proxy.example.com:3128
         parts = urlsplit(proxy)
         if parts.scheme != "http":
-            raise RuntimeError(f"{scheme}_proxy={proxy}: only http:// proxies are supported")
+            raise RuntimeError(f"{scheme}_proxy={redact_url(proxy)}: only http:// proxies are supported")
         if not parts.hostname:
-            raise RuntimeError(f"{scheme}_proxy={proxy}: no proxy host")
+            raise RuntimeError(f"{scheme}_proxy={redact_url(proxy)}: no proxy host")
         headers = {}
         if parts.username is not None:
             cred = f"{unquote(parts.username)}:{unquote(parts.password or '')}"
@@ -412,8 +468,12 @@ class HttpClient:
                     if attempt:
                         raise
             if resp.status in (301, 302, 303, 307, 308) and resp.getheader("Location"):
-                url = urljoin(url, resp.getheader("Location"))
+                target_url = urljoin(url, resp.getheader("Location"))
                 resp.read()  # drain, so the connection can be reused
+                new_scheme = urlsplit(target_url).scheme
+                if new_scheme not in ("http", "https") or (parts.scheme == "https" and new_scheme != "https"):
+                    raise HttpStatusError(resp.status, f"refusing redirect to {target_url}", url)
+                url = target_url
                 continue
             break
         else:
@@ -463,17 +523,22 @@ class HttpRepo:
             self._tmpdir = None
 
     def locate(self, href):
-        return urljoin(self.root, quote(href, safe="/"))
+        return urljoin(self.root, quote(check_href(href), safe="/"))
 
-    def metadata_path(self, href):
+    def metadata_path(self, href, max_size=None):
+        """Download href to the temporary directory. At most max_size bytes
+        (default MAX_METADATA_SIZE) plus one are stored, so that a file that
+        is larger than it should be is noticed but can't fill the disk."""
         if href in self._downloads:
             return self._downloads[href]
+        url = self.locate(href)
         if self._tmpdir is None:
             self._tmpdir = tempfile.mkdtemp(prefix="rrcc-")
         path = os.path.join(self._tmpdir, f"{len(self._downloads)}-{os.path.basename(href)}")
+        limit = (MAX_METADATA_SIZE if max_size is None else max_size) + 1
         try:
-            with self.client.open(self.locate(href)) as resp, open(path, "wb") as out:
-                shutil.copyfileobj(resp, out)
+            with self.client.open(url) as resp, open(path, "wb") as out:
+                copy_limited(resp, out, limit)
         except HttpStatusError as e:
             if e.code != 404:
                 raise
@@ -484,7 +549,10 @@ class HttpRepo:
     def has_local_copy(self, href):
         return self._downloads.get(href) is not None
 
-    def package_size(self, href):
+    def package_size(self, href, max_size=None):
+        """Size of href, or None if the server doesn't have it. If the
+        server sends no Content-Length, the body is counted, but no further
+        than max_size + 1 bytes (when max_size is given)."""
         if self.has_local_copy(href):
             return os.path.getsize(self._downloads[href])
         try:
@@ -494,18 +562,27 @@ class HttpRepo:
                 return int(length)
             # No Content-Length (e.g. chunked): count the bytes instead
             with self.client.open(self.locate(href)) as resp:
-                return sum(len(chunk) for chunk in iter(lambda: resp.read(1024 * 1024), b""))
+                remaining = None if max_size is None else max_size + 1
+                total = 0
+                while remaining is None or remaining > 0:
+                    chunk = resp.read(1024 * 1024 if remaining is None else min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if remaining is not None:
+                        remaining -= len(chunk)
+                return total
         except HttpStatusError as e:
             if e.code == 404:
                 return None
             raise
 
-    def package_checksum_ok(self, href, algo_name, expected_hex):
+    def package_checksum_ok(self, href, algo_name, expected_hex, max_size=None):
         if self.has_local_copy(href):
             with open(self._downloads[href], "rb") as f:
-                return verify_checksum(f, algo_name, expected_hex)
+                return verify_checksum(f, algo_name, expected_hex, max_size)
         with self.client.open(self.locate(href)) as resp:
-            return verify_checksum(resp, algo_name, expected_hex)
+            return verify_checksum(resp, algo_name, expected_hex, max_size)
 
     def iter_rpms(self):
         for url in walk_http(self.client, self.root, skip_repodata=True):
@@ -546,15 +623,25 @@ def list_http_dir(client, url):
 
 def walk_http(client, top, skip_repodata=False):
     """Yield the URL of every file below the directory URL top, by following
-    the web server's directory listings."""
-    todo = [top]
+    the web server's directory listings. Each directory is listed once, and
+    directories nested deeper than MAX_LISTING_DEPTH (a symlink loop on the
+    server, say) raise OSError."""
+    todo = [(top, 0)]
+    seen = {top}
     while todo:
-        dirs, files = list_http_dir(client, todo.pop())
+        url, depth = todo.pop()
+        dirs, files = list_http_dir(client, url)
         yield from files
         for d in dirs:
             if skip_repodata and d.endswith("/repodata/"):
                 continue
-            todo.append(d)
+            if d in seen:
+                continue
+            if depth >= MAX_LISTING_DEPTH:
+                raise OSError(f"directories nested more than {MAX_LISTING_DEPTH} levels deep "
+                              f"below {top} (a loop?): {d}")
+            seen.add(d)
+            todo.append((d, depth + 1))
 
 
 def open_repo(root, ssl_context=None):
@@ -562,11 +649,11 @@ def open_repo(root, ssl_context=None):
 
 
 def make_ssl_context(args):
-    """Build the TLS settings for https:// repos from the command line, or
-    return None for the defaults (system CAs, no client certificate).
-    Raises ValueError with a message for unusable files."""
-    if not (args.ca_cert or args.client_cert or args.client_key or args.insecure):
-        return None
+    """Build the TLS settings for https:// repos from the command line: by
+    default the system CAs and no client certificate. The context is always
+    made here, so that verification of the server does not depend on how the
+    platform's Python is configured (as on RHEL 8, where a system file can
+    turn it off). Raises ValueError with a message for unusable files."""
     if args.client_key and not args.client_cert:
         raise ValueError("--client-key needs --client-cert")
 
@@ -616,7 +703,7 @@ def read_repomd(repo):
     checksum_type, checksum}, with the same keys as iter_packages() uses
     for the fields that describe a file. size and the checksum fields are
     None if not given."""
-    repomd_path = repo.metadata_path("repodata/repomd.xml")
+    repomd_path = repo.metadata_path("repodata/repomd.xml", MAX_REPOMD_SIZE)
     if repomd_path is None:
         raise RuntimeError(f"missing {repo.locate('repodata/repomd.xml')}")
 
@@ -670,9 +757,14 @@ def iter_packages(primary_path):
             if loc is None or "href" not in loc.attrib:
                 elem.clear()
                 continue
+            try:
+                size = int(size_el.attrib["package"]) if size_el is not None else None
+            except (KeyError, ValueError):
+                raise RuntimeError(f"{loc.attrib['href']}: missing or invalid package size "
+                                   "in primary metadata")
             yield {
                 "href": loc.attrib["href"],
-                "size": int(size_el.attrib["package"]) if size_el is not None else None,
+                "size": size,
                 "checksum_type": csum_el.attrib.get("type") if csum_el is not None else None,
                 "checksum": csum_el.text if csum_el is not None else None,
                 "name": name_el.text if name_el is not None else None,
@@ -809,7 +901,10 @@ def read_modules(path):
     documents in which 'document: modulemd' has name, stream and version
     directly under 'data:' and NEVRAs listed under 'artifacts:' 'rpms:'."""
     with open_maybe_compressed(path) as fh:
-        text = fh.read().decode("utf-8")
+        data = fh.read(MAX_MODULES_SIZE + 1)
+    if len(data) > MAX_MODULES_SIZE:
+        raise RuntimeError(f"{path}: module metadata is larger than {MAX_MODULES_SIZE} bytes")
+    text = data.decode("utf-8")
 
     def unquote_yaml(value):
         value = value.strip()
@@ -895,14 +990,24 @@ def newest_packages(packages, modules=()):
     return [p for p in packages if id(p) in keep_ids]  # keep the metadata order
 
 
-def verify_checksum(f, algo_name, expected_hex):
-    """Hash the file-like object f. Returns None if the algo is unsupported."""
+def verify_checksum(f, algo_name, expected_hex, max_size=None):
+    """Hash the file-like object f. Returns None if the algo is unsupported.
+    With max_size, no more than max_size + 1 bytes are read, and a longer
+    file is a mismatch."""
     hasher = CHECKSUM_ALGO_MAP.get(algo_name.lower())
     if hasher is None:
         return None  # unknown algo, skip
     h = hasher()
-    for chunk in iter(lambda: f.read(1024 * 1024), b""):
+    remaining = None if max_size is None else max_size + 1
+    while remaining is None or remaining > 0:
+        chunk = f.read(1024 * 1024 if remaining is None else min(1024 * 1024, remaining))
+        if not chunk:
+            break
         h.update(chunk)
+        if remaining is not None:
+            remaining -= len(chunk)
+    if remaining is not None and remaining <= 0:
+        return False  # more data than the metadata says
     return h.hexdigest() == expected_hex
 
 
@@ -911,11 +1016,13 @@ def find_http_repos(top_url, ssl_context=None):
     directory listings and returns the URLs (with trailing slash) of the
     repos found."""
     repos = []
-    todo = [normalize_url(top_url)]
+    top_url = normalize_url(top_url)
+    todo = [(top_url, 0)]
+    seen = {top_url}
     client = HttpClient(ssl_context)
     try:
         while todo:
-            url = todo.pop()
+            url, depth = todo.pop()
             dirs, _files = list_http_dir(client, url)
             if url + "repodata/" in dirs:
                 try:
@@ -925,7 +1032,14 @@ def find_http_repos(top_url, ssl_context=None):
                     if e.code != 404:
                         raise
                 dirs.remove(url + "repodata/")
-            todo.extend(dirs)
+            for d in dirs:
+                if d in seen:
+                    continue
+                if depth >= MAX_LISTING_DEPTH:
+                    raise OSError(f"directories nested more than {MAX_LISTING_DEPTH} levels deep "
+                                  f"below {top_url} (a loop?): {d}")
+                seen.add(d)
+                todo.append((d, depth + 1))
     finally:
         client.close()
     return sorted(repos)
@@ -968,11 +1082,12 @@ def check_one_repo(repo_root, args):
         repo.close()
 
 
-def _compare_primary_zck(repo, zck_href, plain):
+def _compare_primary_zck(repo, zck_href, zck_size, plain):
     """Cross-check the primary_zck metadata against the plain primary.
-    plain maps normalized href -> (size, checksum_type, checksum) as read
-    from the plain primary. Returns (problems, note)."""
-    zck_path = repo.metadata_path(zck_href)
+    zck_size is its size according to repomd.xml, or None. plain maps
+    normalized href -> (size, checksum_type, checksum) as read from the plain
+    primary. Returns (problems, note)."""
+    zck_path = repo.metadata_path(zck_href, zck_size)
     if zck_path is None:
         return [], None  # reported by verify_metadata()
 
@@ -1002,8 +1117,9 @@ def check_package(repo, pkg, verify):
     still counts as OK, but comes with a warning as the problem)."""
     href = pkg["href"]
     result = True  # checksum result: True/False, or None if the algo is unsupported
+    no_checksum = False
     try:
-        actual_size = repo.package_size(href)
+        actual_size = repo.package_size(href, pkg["size"])
         if actual_size is None:
             return pkg, f"MISSING: {href}", False
 
@@ -1011,11 +1127,16 @@ def check_package(repo, pkg, verify):
             # no point checksumming a truncated/corrupt file
             return pkg, f"SIZE MISMATCH: {href} (expected {pkg['size']}, got {actual_size})", False
 
-        if verify and pkg["checksum_type"] and pkg["checksum"]:
-            result = repo.package_checksum_ok(href, pkg["checksum_type"], pkg["checksum"])
+        if verify:
+            if pkg["checksum_type"] and pkg["checksum"]:
+                result = repo.package_checksum_ok(href, pkg["checksum_type"], pkg["checksum"], pkg["size"])
+            else:
+                no_checksum = True
     except OSError as e:
         return pkg, f"UNREADABLE: {href}: {type(e).__name__}: {e}", False
 
+    if no_checksum:
+        return pkg, f"WARNING: no checksum in the metadata for {href}, skipped", True
     if result is False:
         return pkg, f"CHECKSUM MISMATCH: {href}", False
     if result is None:
@@ -1066,7 +1187,7 @@ def verify_metadata(repo, entries, args):
         if problem:
             problems.append(f"METADATA {problem} ({entry['type']})")
         if is_ok and args.verbose:
-            print(f"  OK: {entry['href']}")
+            print(f"  OK: {printable(entry['href'])}")
 
     size_only = len(files) - len(verified)
     note = f"{len(files)} metadata file(s) in repomd.xml checked"
@@ -1085,7 +1206,10 @@ def _check_one_repo(repo, args):
     except RuntimeError as e:
         return "error", 0, [str(e)], []
 
-    primary_path = repo.metadata_path(primary_href)
+    # repomd.xml says how big each file is, which bounds what is downloaded
+    sizes = {e["href"]: e["size"] for e in entries}
+
+    primary_path = repo.metadata_path(primary_href, sizes[primary_href])
     if primary_path is None:
         return "error", 0, [f"primary metadata file listed in repomd.xml is missing: {repo.locate(primary_href)}"], []
 
@@ -1115,7 +1239,7 @@ def _check_one_repo(repo, args):
         modules = []
         modules_href = find_data_location(entries, "modules", required=False)
         if modules_href is not None and not args.ignore_modules:
-            modules_path = repo.metadata_path(modules_href)
+            modules_path = repo.metadata_path(modules_href, sizes[modules_href])
             if modules_path is None:
                 return "error", 0, [f"modules metadata file listed in repomd.xml is missing: "
                                     f"{repo.locate(modules_href)}"], []
@@ -1134,10 +1258,10 @@ def _check_one_repo(repo, args):
         if problem:
             problems.append(problem)
         if is_ok and args.verbose:
-            print(f"  OK: {href}")
+            print(f"  OK: {printable(href)}")
 
     if zck_href is not None:
-        zck_problems, note = _compare_primary_zck(repo, zck_href, plain)
+        zck_problems, note = _compare_primary_zck(repo, zck_href, sizes[zck_href], plain)
         problems.extend(zck_problems)
         if note:
             notes.append(note)
@@ -1199,6 +1323,8 @@ def main():
         args.ssl_context = make_ssl_context(args)
     except ValueError as e:
         ap.error(str(e))
+    if args.insecure:
+        print("WARNING: --insecure: the identity of https:// servers is not verified", file=sys.stderr)
 
     overall_problem = False
     overall_error = False
@@ -1218,44 +1344,44 @@ def main():
         if args.top_level:
             try:
                 found = find_repos(top_path, args.ssl_context)
-            except OSError as e:
-                print(f"ERROR: cannot search {top_path}: {type(e).__name__}: {e}", file=sys.stderr)
+            except (OSError, RuntimeError) as e:
+                print(f"ERROR: cannot search {top_path}: {type(e).__name__}: {printable(e)}", file=sys.stderr)
                 overall_error = True
                 continue
             if not found:
-                print(f"ERROR: no repos found under {top_path} (looked for */repodata/repomd.xml)", file=sys.stderr)
+                print(f"ERROR: no repos found under {printable(top_path)} (looked for */repodata/repomd.xml)", file=sys.stderr)
                 overall_error = True
                 continue
 
             def rel(r):
                 return r[len(top_path):] or "." if is_url(top_path) else os.path.relpath(r, top_path)
 
-            print(f"Found {len(found)} repo(s) under {top_path}:")
+            print(f"Found {len(found)} repo(s) under {printable(top_path)}:")
             for r in found:
-                print(f"  {rel(r)}")
+                print(f"  {printable(rel(r))}")
                 add_repo(r if len(args.paths) > 1 else rel(r), r)
             print()
         else:
             add_repo(top_path, top_path)
 
     for label, repo_root in repos:
-        print(f"=== {label} ===")
+        print(f"=== {printable(label)} ===")
         status, count, problems, notes = check_one_repo(repo_root, args)
         total_packages += count
 
         if status == "error":
             overall_error = True
-            print(f"  ERROR: {problems[0]}")
+            print(f"  ERROR: {printable(problems[0])}")
         elif status == "problems":
             overall_problem = True
             print(f"  {count} packages checked, {len(problems)} problem(s):")
             for p in problems:
-                print(f"    {p}")
+                print(f"    {printable(p)}")
         else:
             print(f"  {count} packages checked, consistent"
                   + (" (checksums verified)." if args.checksum else " (size-checked)."))
         for note in notes:
-            print(f"  {note}")
+            print(f"  {printable(note)}")
         print()
 
     print(f"Summary: {len(repos)} repo(s), {total_packages} package(s) checked total.")

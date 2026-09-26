@@ -1,3 +1,15 @@
+* Sat Sep 26 2026 Johan Hedin - 1.x.y (not released yet)
+- Refuse locations in the metadata that are absolute or lead outside of the
+  repository, both for directories and URLs
+- Refuse redirects from https:// to http:// and to other schemes
+- Limit what is downloaded, or read from a compressed file, to the sizes in
+  the metadata, and stop following loops in directory listings
+- Don't print the password of a proxy URL in error messages
+- Print control characters in names from the repository as \xNN
+- Warn about packages without checksum with --checksum, and don't stop on a
+  package without size in primary.xml
+- Always create the TLS context in rrcc, and warn when --insecure is used
+
 * Sat Sep 26 2026 Johan Hedin - 1.4.0
 - Add a test suite, run with 'make test' and 'make test-all'
 - Reuse the worker threads for all checks of a remote repository

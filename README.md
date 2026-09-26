@@ -33,6 +33,22 @@ ignores the modules.
 A typical use case is mirroring a remote RPM repository and wanting to
 automate checks that tell you whether the mirror is in a usable state.
 
+## Security
+
+`rrcc` treats the repository, and the server it comes from, as untrusted
+input. Locations in the metadata that are absolute or lead outside of the
+repository (`../`, `//host/...`) are refused and reported as problems instead
+of being opened or requested. Redirects are followed, except from `https://`
+to `http://` and to anything other than `http(s)://`. Downloads are bounded by
+the sizes in the metadata, loops in directory listings are detected, proxy
+passwords are never printed, and names from the repository are printed with
+control characters escaped.
+
+`rrcc` checks that a repository is *consistent*, not that it is *authentic*.
+It does not verify GPG signatures of `repomd.xml` or of the packages, and it
+accepts the checksum algorithms that the metadata uses, including MD5 and
+SHA-1. Use `--insecure` only for servers that you trust in some other way.
+
 ## Usage
 
 Run with `--help` to learn how to use `rrcc`:

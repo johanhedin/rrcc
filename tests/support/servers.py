@@ -129,7 +129,7 @@ class _StaticHandler(http.server.SimpleHTTPRequestHandler):
         prefix = self.owner.redirect_prefix
         if prefix and self.path.startswith(prefix):
             self.send_response(302)
-            self.send_header("Location", "/" + self.path[len(prefix):])
+            self.send_header("Location", (self.owner.redirect_target or "/") + self.path[len(prefix):])
             self.send_header("Content-Length", "0")
             self.end_headers()
             return True
@@ -145,15 +145,19 @@ class StaticServer(_BaseServer):
         telling the client (tests the retry on a stale keep-alive connection).
     redirect_prefix: e.g. "/old/": requests below it get a 302 to the same
         path without the prefix.
+    redirect_target: with redirect_prefix, where the redirect goes instead of
+        this server, e.g. "http://127.0.0.1:1234/" (ends with a slash).
     listings: set to False to answer directory requests with 403.
     """
 
     handler_class = _StaticHandler
 
-    def __init__(self, root, drop_after_request=False, redirect_prefix=None, listings=True):
+    def __init__(self, root, drop_after_request=False, redirect_prefix=None, listings=True,
+                 redirect_target=None):
         self.root = root
         self.drop_after_request = drop_after_request
         self.redirect_prefix = redirect_prefix
+        self.redirect_target = redirect_target
         self.listings = listings
         self.requests = []
         super().__init__()
