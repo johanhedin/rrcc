@@ -3,7 +3,7 @@
 _rrcc()
 {
     local cur="${COMP_WORDS[COMP_CWORD]}"
-    local opts="-h --help --top-level --checksum --extra -j --jobs -v --verbose --version"
+    local opts="-h --help --top-level --checksum --extra -n --newest-only -j --jobs -v --verbose --version"
 
     if [[ $cur == -* ]]; then
         COMPREPLY=( $(compgen -W "$opts" -- "$cur") )

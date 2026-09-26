@@ -15,6 +15,9 @@ size of each package is checked with a HEAD request. Connections are kept
 alive and several packages are checked in parallel, by default 8; change that
 with `--jobs`.
 
+With `--newest-only` only the latest version of each package is checked,
+which is what you want for a mirror made with `dnf reposync --newest-only`.
+
 A typical use case is mirroring a remote RPM repository and wanting to
 automate checks that tell you whether the mirror is in a usable state.
 

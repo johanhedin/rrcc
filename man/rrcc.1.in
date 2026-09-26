@@ -80,6 +80,28 @@ files found on disk that are not referenced by
 such as orphaned or stale files.
 For a URL this requires that the web server has directory listings enabled.
 .TP
+.BR \-n ", " \-\-newest\-only
+Only check the latest version of each package listed in
+.IR primary.xml ,
+and skip the older ones.
+This matches
+.B dnf reposync \-\-newest\-only
+and is meant for checking a mirror made that way.
+The latest version is picked per package name and architecture.
+For repositories with modules (modular repositories) the same rules as in
+.BR dnf (8)
+are used: the latest version of each non-modular package, all packages of the
+newest build of each module stream, and all packages of any older build of a
+stream that contains the latest version of one of its packages.
+The module metadata is then read from
+.IR modules.yaml .
+Skipped packages are still counted as part of the repository, so they are not
+reported by
+.B \-\-extra
+and are still included in the
+.I primary_zck
+cross-check.
+.TP
 .BR \-j ", " \-\-jobs " \fIN\fR"
 Check
 .I N

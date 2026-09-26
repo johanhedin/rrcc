@@ -38,6 +38,12 @@ Options:
                          referenced by primary.xml (orphans / stale files).
                          For a URL this needs directory listings enabled on
                          the web server.
+    -n, --newest-only    Only check the latest version of each package (per name
+                         and architecture) listed in primary.xml, and skip the
+                         older ones. Same as 'dnf reposync --newest-only', so
+                         use it to check a mirror made that way. Modular
+                         repos are handled like dnf does it (the module
+                         metadata in modules.yaml is read).
     -j, --jobs N         Check N packages in parallel for a remote repo
                          (default 8, 1 disables parallelism). Each worker
                          keeps its own connection to the server alive, so
@@ -80,6 +86,7 @@ import http.client
 import lzma
 import os
 import shutil
+import string
 import subprocess
 import sys
 import tempfile
@@ -471,12 +478,16 @@ def find_data_location(repo, data_type, required=True):
 
 
 def iter_packages(primary_path):
-    """Yield dicts: {href, size, checksum_type, checksum}"""
+    """Yield dicts: {href, size, checksum_type, checksum, name, arch,
+    epoch, version, release}"""
     with open_maybe_compressed(primary_path) as fh:
         for event, elem in ET.iterparse(fh, events=("end",)):
             if elem.tag != f"{NS_COMMON}package":
                 continue
             loc = elem.find(f"{NS_COMMON}location")
+            name_el = elem.find(f"{NS_COMMON}name")
+            arch_el = elem.find(f"{NS_COMMON}arch")
+            ver_el = elem.find(f"{NS_COMMON}version")
             size_el = elem.find(f"{NS_COMMON}size")
             csum_el = elem.find(f"{NS_COMMON}checksum")
             if loc is None or "href" not in loc.attrib:
@@ -487,8 +498,223 @@ def iter_packages(primary_path):
                 "size": int(size_el.attrib["package"]) if size_el is not None else None,
                 "checksum_type": csum_el.attrib.get("type") if csum_el is not None else None,
                 "checksum": csum_el.text if csum_el is not None else None,
+                "name": name_el.text if name_el is not None else None,
+                "arch": arch_el.text if arch_el is not None else None,
+                "epoch": ver_el.attrib.get("epoch") if ver_el is not None else None,
+                "version": ver_el.attrib.get("ver") if ver_el is not None else None,
+                "release": ver_el.attrib.get("rel") if ver_el is not None else None,
             }
             elem.clear()
+
+
+ALNUM = frozenset(string.ascii_letters + string.digits)
+DIGITS = frozenset(string.digits)
+
+
+def rpmvercmp(a, b):
+    """Compare two version (or release) strings the way rpm does
+    (rpmvercmp() in rpm's rpmio/rpmvercmp.c). Returns -1, 0 or 1."""
+    if a == b:
+        return 0
+    i = j = 0
+    while i < len(a) or j < len(b):
+        # skip separators, i.e. everything but alphanumerics, ~ and ^
+        while i < len(a) and a[i] not in ALNUM and a[i] not in "~^":
+            i += 1
+        while j < len(b) and b[j] not in ALNUM and b[j] not in "~^":
+            j += 1
+        ca = a[i] if i < len(a) else ""
+        cb = b[j] if j < len(b) else ""
+
+        # ~ sorts before everything, even the end of the string
+        if ca == "~" or cb == "~":
+            if ca != "~":
+                return 1
+            if cb != "~":
+                return -1
+            i += 1
+            j += 1
+            continue
+
+        # ^ sorts after the end of the string, but before anything else
+        if ca == "^" or cb == "^":
+            if not ca:
+                return -1
+            if not cb:
+                return 1
+            if ca != "^":
+                return 1
+            if cb != "^":
+                return -1
+            i += 1
+            j += 1
+            continue
+
+        if not (ca and cb):
+            break
+
+        # Compare one segment: all digits or all letters, decided by a
+        isnum = ca in DIGITS
+        charset = DIGITS if isnum else ALNUM - DIGITS
+        ei, ej = i, j
+        while ei < len(a) and a[ei] in charset:
+            ei += 1
+        while ej < len(b) and b[ej] in charset:
+            ej += 1
+        seg_a, seg_b = a[i:ei], b[j:ej]
+        if not seg_b:
+            # segments of different kinds: numeric is newer than alpha
+            return 1 if isnum else -1
+        if isnum:
+            seg_a, seg_b = seg_a.lstrip("0"), seg_b.lstrip("0")
+            if len(seg_a) != len(seg_b):
+                return 1 if len(seg_a) > len(seg_b) else -1
+        if seg_a != seg_b:
+            return 1 if seg_a > seg_b else -1
+        i, j = ei, ej
+
+    if i >= len(a) and j >= len(b):
+        return 0
+    return 1 if i < len(a) else -1
+
+
+def evr_cmp(pkg1, pkg2):
+    """Compare two packages by epoch, version and release."""
+    for key in ("epoch", "version", "release"):
+        v1, v2 = pkg1[key] or "0", pkg2[key] or "0"
+        if key == "epoch":
+            v1, v2 = int(v1), int(v2)
+            rc = (v1 > v2) - (v1 < v2)
+        else:
+            rc = rpmvercmp(v1, v2)
+        if rc:
+            return rc
+    return 0
+
+
+def latest_packages(packages):
+    """Return the packages that have the highest version of their name and
+    architecture. Several packages that share the highest version are all
+    kept, and so is any package that has no name or version in the
+    metadata. The order of packages is kept."""
+    best = {}  # (name, arch) -> list of packages with the highest version so far
+    keep = []
+    for pkg in packages:
+        if pkg["name"] is None or pkg["version"] is None:
+            keep.append(pkg)
+            continue
+        group = best.setdefault((pkg["name"], pkg["arch"]), [])
+        rc = evr_cmp(pkg, group[0]) if group else 1
+        if rc > 0:
+            group[:] = [pkg]
+        elif rc == 0:
+            group.append(pkg)
+    for group in best.values():
+        keep.extend(group)
+    keep_ids = {id(p) for p in keep}
+    return [p for p in packages if id(p) in keep_ids]
+
+
+def nevra(pkg):
+    """name-epoch:version-release.arch, as in the artifacts of a module."""
+    if pkg["name"] is None or pkg["version"] is None:
+        return None
+    return f"{pkg['name']}-{pkg['epoch'] or '0'}:{pkg['version']}-{pkg['release']}.{pkg['arch']}"
+
+
+def read_modules(path):
+    """Read modules.yaml (modulemd) and return a list of dicts
+    {name, stream, version, artifacts} with one entry per module build,
+    where artifacts is the set of NEVRAs of the module's rpms.
+
+    There is no YAML parser in the standard library, so this understands
+    just enough of the fixed layout that libmodulemd writes: a stream of
+    documents in which 'document: modulemd' has name, stream and version
+    directly under 'data:' and NEVRAs listed under 'artifacts:' 'rpms:'."""
+    with open_maybe_compressed(path) as fh:
+        text = fh.read().decode("utf-8")
+
+    def unquote_yaml(value):
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        return value
+
+    modules = []
+    doc = None
+    for line in text.splitlines():
+        line = line.rstrip()
+        if line == "---":
+            doc = {"type": None, "section": None, "in_rpms": False, "artifacts": set()}
+        elif line == "..." and doc is not None:
+            if doc["type"] == "modulemd":
+                try:
+                    modules.append({"name": doc["name"], "stream": doc["stream"],
+                                    "version": int(doc["version"]), "artifacts": doc["artifacts"]})
+                except (KeyError, ValueError) as e:
+                    raise RuntimeError(f"{path}: cannot understand module metadata (missing or bad {e})")
+            doc = None
+        elif doc is None:
+            continue
+        elif line.startswith("document: "):
+            doc["type"] = line[len("document: "):].strip()
+        elif line.startswith("  ") and not line.startswith("   "):  # a key directly under data:
+            doc["section"] = "artifacts" if line == "  artifacts:" else None
+            for key in ("name", "stream", "version"):
+                if line.startswith(f"  {key}: "):
+                    doc[key] = unquote_yaml(line[len(f"  {key}: "):])
+        elif doc["section"] == "artifacts":
+            if line.startswith("    - "):
+                if doc["in_rpms"]:
+                    doc["artifacts"].add(unquote_yaml(line[6:]))
+            elif line.startswith("    ") and not line.startswith("     "):
+                doc["in_rpms"] = line == "    rpms:"
+    return modules
+
+
+def newest_packages(packages, modules=()):
+    """Return the packages that 'dnf reposync --newest-only' would download:
+
+    - the latest version of each non-modular package (per name and arch),
+    - all rpms of the newest build of each module stream, and
+    - all rpms of any older build of a stream that holds the latest
+      version of one of the stream's packages.
+
+    Without modules this is just the latest version of each package."""
+    all_artifacts = set()
+    streams = {}           # (name, stream) -> {version: [modules]}
+    artifact_versions = {}  # NEVRA -> {(name, stream): [versions]}
+    for m in modules:
+        all_artifacts |= m["artifacts"]
+        key = (m["name"], m["stream"])
+        streams.setdefault(key, {}).setdefault(m["version"], []).append(m)
+        for artifact in m["artifacts"]:
+            artifact_versions.setdefault(artifact, {}).setdefault(key, []).append(m["version"])
+
+    by_nevra = {}
+    for pkg in packages:
+        by_nevra.setdefault(nevra(pkg), []).append(pkg)
+
+    keep = latest_packages([p for p in packages if nevra(p) not in all_artifacts])
+
+    keep_artifacts = set()
+    for key, versions_dict in streams.items():
+        versions = {max(versions_dict)}
+        stream_artifacts = set()
+        for ms in versions_dict.values():
+            for m in ms:
+                stream_artifacts |= m["artifacts"]
+        in_stream = [p for a in stream_artifacts for p in by_nevra.get(a, ())]
+        for pkg in latest_packages(in_stream):
+            versions.add(max(artifact_versions[nevra(pkg)][key]))
+        for version in versions:
+            for m in versions_dict[version]:
+                keep_artifacts |= m["artifacts"]
+    for artifact in keep_artifacts:
+        keep.extend(by_nevra.get(artifact, ()))
+
+    keep_ids = {id(p) for p in keep}
+    return [p for p in packages if id(p) in keep_ids]  # keep the metadata order
 
 
 def verify_checksum(f, algo_name, expected_hex):
@@ -619,11 +845,10 @@ def check_package(repo, pkg, verify):
     return pkg, None, True
 
 
-def check_packages(repo, primary_path, args):
-    """Yield check_package() results for every package in primary.xml, in
-    the order they are listed. Remote repos are checked by args.jobs
-    threads at a time; a local repo is checked in the calling thread."""
-    packages = iter_packages(primary_path)
+def check_packages(repo, packages, args):
+    """Yield check_package() results for the given packages, in order.
+    Remote repos are checked by args.jobs threads at a time; a local repo
+    is checked in the calling thread."""
     if args.jobs <= 1 or not isinstance(repo, HttpRepo):
         for pkg in packages:
             yield check_package(repo, pkg, args.checksum)
@@ -650,11 +875,31 @@ def _check_one_repo(repo, args):
     plain = {}  # normalized href -> (size, checksum_type, checksum), for the primary_zck cross-check
     count = 0
 
-    for pkg, problem, is_ok in check_packages(repo, primary_path, args):
+    # Everything in the metadata counts as referenced (for --extra and the
+    # primary_zck cross-check), even packages skipped by --newest-only.
+    packages = list(iter_packages(primary_path))
+    for pkg in packages:
+        seen_hrefs.add(os.path.normpath(pkg["href"]))
+        plain[os.path.normpath(pkg["href"])] = (pkg["size"], pkg["checksum_type"], pkg["checksum"])
+
+    if args.newest_only:
+        modules = []
+        modules_href = find_data_location(repo, "modules", required=False)
+        if modules_href is not None:
+            modules_path = repo.metadata_path(modules_href)
+            if modules_path is None:
+                return "error", 0, [f"modules metadata file listed in repomd.xml is missing: "
+                                    f"{repo.locate(modules_href)}"], []
+            modules = read_modules(modules_path)
+        to_check = newest_packages(packages, modules)
+        notes.append(f"--newest-only: skipped {len(packages) - len(to_check)} older package(s), "
+                     f"{len(packages)} in metadata")
+    else:
+        to_check = packages
+
+    for pkg, problem, is_ok in check_packages(repo, to_check, args):
         count += 1
         href = pkg["href"]
-        seen_hrefs.add(os.path.normpath(href))
-        plain[os.path.normpath(href)] = (pkg["size"], pkg["checksum_type"], pkg["checksum"])
 
         if problem:
             problems.append(problem)
@@ -688,6 +933,8 @@ def main():
                      help="treat each 'path' as a parent dir; auto-discover repos under it")
     ap.add_argument("--checksum", action="store_true", help="also verify checksums (slow)")
     ap.add_argument("--extra", action="store_true", help="report on-disk RPMs not in metadata")
+    ap.add_argument("-n", "--newest-only", action="store_true",
+                    help="only check the latest version of each package (like dnf reposync --newest-only)")
     ap.add_argument("-j", "--jobs", type=positive_int, default=DEFAULT_JOBS, metavar="N",
                     help=f"number of packages to check in parallel for http(s):// repos "
                          f"(default: {DEFAULT_JOBS}; 1 disables parallelism); ignored for directories")
