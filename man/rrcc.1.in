@@ -1,4 +1,4 @@
-.TH RRCC 1 "September 2026" "1.0.0" "User Commands"
+.TH RRCC 1 "@DATE@" "@VERSION@" "User Commands"
 .SH NAME
 rrcc \- RPM Repository Consistency Checker
 .SH SYNOPSIS
