@@ -1,15 +1,14 @@
-# RPM repository consistency checker
-This repository contain a Python script called `rrcc` which is short
-for "RPM repository consistency checker".
+# RPM Repository Consistency Checker
+This repository contains a Python script called `rrcc` which stands
+for "RPM Repository Consistency Checker".
 
-The script can be run against a RPM repository on disk to check if the
-repo is consistent. The meaning of consistent is that all files referenced
-from the metadata in the `repodata` directory exist with correct size and,
-optionally, correct checksum.
+The script can be run against an RPM repository on disk to check if the
+repo is consistent. Consistent means that all files referenced
+from the metadata in the `repodata` directory exist and have the correct
+size and, optionally, the correct checksum.
 
-Typical use case is when you mirror a remote RPM repository and like to
-automate checks that tell you if the mirror is in a usable state.
-
+A typical use case is mirroring a remote RPM repository and wanting to
+automate checks that tell you whether the mirror is in a usable state.
 
 ## Usage
 Run with `--help` to learn how to use `rrcc`:
@@ -18,18 +17,22 @@ Run with `--help` to learn how to use `rrcc`:
 rrcc.py --help
 ```
 
-
 ## Requirements
-`rrcc` works on Python 3.9+ but needs the `zchunk` utility and the `python3-zstandard` Python
-third-party package if on Python < 3.14. Install with:
+`rrcc` runs on Python 3.9 or newer using only the standard library, with two
+optional exceptions depending on the metadata format the repository uses:
 
-### RHEL/Rocky/Alma 9+
+- `.zst` metadata needs the `python3-zstandard` package (not needed on Python 3.14+).
+- `.zck` metadata needs the `zchunk` utility (all Python versions).
+
+Install with:
+
+### RHEL, Rocky Linux and AlmaLinux 9+
 ```
 sudo dnf install epel-release
 sudo dnf install python3-zstandard zchunk
 ```
 
-### Fedora "recent"
+### Fedora >= 43
 ```
 sudo dnf install zchunk
 ```
