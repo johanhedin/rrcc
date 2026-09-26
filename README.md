@@ -17,8 +17,12 @@ Run with `--help` to learn how to use `rrcc`:
 rrcc.py --help
 ```
 
+## Supported platforms
+RPM repositories are mostly used for RHEL based distributions so `rrcc` is only
+tested on RHEL/Rocky 8 or newer and Fedora 43 and newer.
+
 ## Requirements
-`rrcc` runs on Python 3.9 or newer using only the standard library, with two
+`rrcc` runs on Python 3.6 or newer using only the standard library, with two
 optional exceptions depending on the metadata format the repository uses:
 
 - `.zst` metadata needs the `python3-zstandard` package (not needed on Python 3.14+).
@@ -26,7 +30,7 @@ optional exceptions depending on the metadata format the repository uses:
 
 Install with:
 
-### RHEL, Rocky Linux and AlmaLinux 9+
+### RHEL, Rocky Linux and AlmaLinux 8+
 ```
 sudo dnf install epel-release
 sudo dnf install python3-zstandard zchunk

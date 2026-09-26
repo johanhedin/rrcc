@@ -96,7 +96,7 @@ class ZckStream:
     """Read-only file-like object yielding the decompressed contents of a
     .zck (zchunk) file. Python has no zchunk support, so this streams the
     output of the external 'unzck --stdout' command (package 'zchunk',
-    from EPEL on Rocky/RHEL 9). If unzck fails, the error is raised from
+    from EPEL on Rocky/RHEL 8+). If unzck fails, the error is raised from
     read() when the end of the stream is reached."""
 
     def __init__(self, path):
@@ -105,7 +105,7 @@ class ZckStream:
         if unzck is None:
             raise RuntimeError(
                 f"{path}: .zck primary metadata requires the 'unzck' command "
-                "(dnf install zchunk; on Rocky/RHEL 9 this needs EPEL)"
+                "(dnf install zchunk; on Rocky/RHEL 8+ this needs EPEL)"
             )
         self._stderr = tempfile.TemporaryFile()
         try:
