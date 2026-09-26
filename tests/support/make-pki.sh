@@ -16,25 +16,53 @@ rm -rf pki
 mkdir pki
 cd pki
 
+# The certificates must satisfy the strict X.509 checks that Python 3.13+
+# enables by default (VERIFY_X509_STRICT): key identifiers everywhere and
+# critical basic constraints on the CAs.
+cat > ext.cnf <<'EOT'
+[req]
+distinguished_name = dn
+[dn]
+[ca]
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+[server]
+basicConstraints = critical, CA:FALSE
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:localhost
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+[client]
+basicConstraints = critical, CA:FALSE
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = clientAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always
+EOT
+
 DAYS=36500
-openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -days $DAYS \
-    -subj "/CN=rrcc test CA" 2>/dev/null
+ca() {  # ca NAME SUBJECT
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout "$1.key" -out "$1.pem" -days $DAYS \
+        -subj "$2" -config ext.cnf -extensions ca 2>/dev/null
+}
+signed() {  # signed NAME SUBJECT EXTENSIONS
+    openssl req -newkey rsa:2048 -nodes -keyout "$1.key" -out "$1.csr" -subj "$2" \
+        -config ext.cnf 2>/dev/null
+    openssl x509 -req -in "$1.csr" -CA ca.pem -CAkey ca.key -CAcreateserial -out "$1.pem" \
+        -days $DAYS -extfile ext.cnf -extensions "$3" 2>/dev/null
+}
 
-openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj "/CN=localhost" 2>/dev/null
-printf 'subjectAltName=DNS:localhost\n' > server.ext
-openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out server.pem \
-    -days $DAYS -extfile server.ext 2>/dev/null
-
-openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj "/CN=rrcc test client" 2>/dev/null
-openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out client.pem \
-    -days $DAYS 2>/dev/null
+ca ca "/CN=rrcc test CA"
+signed server "/CN=localhost" server
+signed client "/CN=rrcc test client" client
 cat client.pem client.key > client-combined.pem
 openssl rsa -in client.key -aes256 -passout pass:secret -out client-encrypted.key 2>/dev/null
-
-openssl req -x509 -newkey rsa:2048 -nodes -keyout other-ca.key -out other-ca.pem -days $DAYS \
-    -subj "/CN=rrcc other CA" 2>/dev/null
+ca other-ca "/CN=rrcc other CA"
 
 mkdir cadir
 cp ca.pem "cadir/$(openssl x509 -hash -noout -in ca.pem).0"
 
-rm -f server.csr server.ext client.csr ca.srl ca.key other-ca.key
+rm -f ext.cnf server.csr client.csr ca.srl ca.key other-ca.key

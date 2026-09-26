@@ -127,6 +127,8 @@ class RpmVerCmpTest(unittest.TestCase):
         for _ in range(20000):
             a = "".join(rnd.choice(tokens) for _ in range(rnd.randint(0, 4)))
             b = "".join(rnd.choice(tokens) for _ in range(rnd.randint(0, 4)))
+            if not (a and b):
+                continue  # rpm 4.16+ refuses an empty version ("invalid version")
             expected = rpm.labelCompare(("0", a, "0"), ("0", b, "0"))
             self.assertEqual(rrcc.rpmvercmp(a, b), expected, f"{a!r} vs {b!r}")
 
