@@ -28,6 +28,7 @@ Options:
     --extra              Also report *.rpm files on disk that are NOT
                          referenced by primary.xml (orphans / stale files).
     -v, --verbose        Print a line for every package checked.
+    --version            Print the version and exit.
 
 If repomd.xml also lists a "primary_zck" entry (the zchunk-compressed copy
 of primary.xml that createrepo_c --zck produces), it is cross-checked against
@@ -66,6 +67,8 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 import zlib
+
+__version__ = "1.0.0"
 
 NS_REPO = "{http://linux.duke.edu/metadata/repo}"
 NS_COMMON = "{http://linux.duke.edu/metadata/common}"
@@ -355,6 +358,8 @@ def main():
     ap.add_argument("--checksum", action="store_true", help="also verify checksums (slow)")
     ap.add_argument("--extra", action="store_true", help="report on-disk RPMs not in metadata")
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("--version", action="version", version=f"rrcc {__version__}",
+                    help="print the version and exit")
     args = ap.parse_args()
 
     overall_problem = False
