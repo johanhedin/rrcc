@@ -172,6 +172,34 @@ class NewestOnlyTest(TestCase):
         for kept in ("a/a-2-1.module+1", "a/a-1-1.module+2", "b/b-2-1.module+4", "p/plain-2-1"):
             self.assertIn(f"OK: Packages/{kept}.x86_64.rpm", result.out)
 
+    def test_ignore_modules(self):
+        # Like dnf 5: just the latest a, even though the newest module build
+        # has the older one.
+        repo = RepoBuilder(self.tmp)
+        repo.add("a", "2", "1.module+1")
+        repo.add("a", "1", "1.module+2", write=False)
+        repo.add_module("m", "s", 1, ["a-0:2-1.module+1.x86_64"])
+        repo.add_module("m", "s", 2, ["a-0:1-1.module+2.x86_64"])
+        repo.build()
+        self.assertProblem(self.rrcc("-n", self.tmp, rc=1), "MISSING: Packages/a/a-1-1.module+2")
+        result = self.rrcc("-n", "--ignore-modules", self.tmp, rc=0)
+        self.assertIn("skipped 1 older package(s), 2 in metadata, modules ignored", result.out)
+
+    def test_ignore_modules_does_not_read_modules(self):
+        repo = RepoBuilder(self.tmp)
+        repo.add("a", "1", "1.module+1")
+        repo.add_module("m", "s", 1, ["a-0:1-1.module+1.x86_64"])
+        repo.build()
+        with open(repo.metadata["modules"], "wb") as f:
+            f.write(b"not gzip")
+        result = self.rrcc("-n", "--ignore-modules", self.tmp, rc=1)
+        self.assertIn("1 packages checked", result.out)
+        self.assertProblem(result, "METADATA SIZE MISMATCH")
+
+    def test_ignore_modules_needs_newest_only(self):
+        result = self.rrcc("--ignore-modules", self.tmp, rc=2)
+        self.assertIn("--ignore-modules needs --newest-only", result.err)
+
     def test_missing_modules_file_is_an_error(self):
         repo = RepoBuilder(self.tmp)
         repo.add("a", "1", "1.module+1")

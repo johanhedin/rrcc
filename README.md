@@ -24,6 +24,9 @@ an entitlement certificate.
 
 With `--newest-only` only the latest version of each package is checked,
 which is what you want for a mirror made with `dnf reposync --newest-only`.
+Modular repositories are handled like dnf 4 (RHEL 8 to 10) does; add
+`--ignore-modules` for a mirror made with dnf 5 (Fedora 41 and newer), which
+ignores the modules.
 
 A typical use case is mirroring a remote RPM repository and wanting to
 automate checks that tell you whether the mirror is in a usable state.
@@ -101,7 +104,9 @@ installed: `zck`/`unzck` (zchunk metadata), `python3-zstandard` (zst metadata),
 
 `make test-all` also runs the slow tests, which compare the package selection
 of `--newest-only` with `dnf reposync --newest-only` on random repositories and
-need `dnf` with `dnf-plugins-core`.
+need `dnf` with its reposync plugin (`dnf-plugins-core` for dnf 4,
+`dnf5-plugins` for dnf 5). With dnf 5 the comparison is made with
+`--ignore-modules`.
 
 The test certificates in `tests/support/pki/` are regenerated with
 `tests/support/make-pki.sh`.
