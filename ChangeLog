@@ -1,3 +1,7 @@
+* Sat Sep 26 2026 Johan Hedin - 1.x.y (not released yet)
+- Add a test suite, run with 'make test' and 'make test-all'
+- Reuse the worker threads for all checks of a remote repository
+
 * Sat Sep 26 2026 Johan Hedin - 1.3.0
 - Honor the http_proxy, https_proxy and no_proxy environment variables
 - Add TLS support for https:// repositories

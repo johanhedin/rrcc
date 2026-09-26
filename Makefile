@@ -3,7 +3,8 @@
 # The version and release date are taken from the topmost released entry in
 # ChangeLog, which is the single source of truth. Entries without a numeric
 # version, e.g. "1.x.y (not released yet)", are skipped. The man page is
-# generated from man/rrcc.1.in and 'make check' verifies rrcc.py.
+# generated from man/rrcc.1.in and 'make check' verifies rrcc.py. 'make test'
+# runs the test suite in tests/, 'make test-all' also the slow tests.
 #
 # All settings can be overridden from the environment or the command line:
 #
@@ -13,6 +14,7 @@
 
 PROGRAM  := rrcc
 SCRIPT   := rrcc.py
+PYTHON   ?= python3
 
 # Topmost released ChangeLog entry, e.g. "* Sat Sep 26 2026 Johan Hedin - 1.1.0"
 CL_ENTRY := $(shell sed -n -E '/^\* .* - [0-9]+\.[0-9]+\.[0-9]+[[:space:]]*$$/{p;q}' ChangeLog)
@@ -46,7 +48,7 @@ BASHCOMP := bash-completion/$(PROGRAM)
 MAN1     := man/$(PROGRAM).1
 MAN1_IN  := $(MAN1).in
 
-.PHONY: all man check clean install uninstall help
+.PHONY: all man check test test-all clean install uninstall help
 
 all: help
 
@@ -54,6 +56,8 @@ help:
 	@echo "Targets:"
 	@echo "  man        Generate $(MAN1) from $(MAN1_IN)"
 	@echo "  check      Verify that rrcc.py and ChangeLog agree on version and date"
+	@echo "  test       Run the test suite (PYTHON=$(PYTHON))"
+	@echo "  test-all   Run the test suite including the slow tests (needs dnf)"
 	@echo "  clean      Remove generated files"
 	@echo "  install    Install $(PROGRAM), bash completion, man page and documentation"
 	@echo "  uninstall  Remove what 'make install' installed"
@@ -84,8 +88,11 @@ check:
 	fi; \
 	echo "OK: version $(VERSION), $(CL_WEEKDAY) $(CL_DATE)"
 
-clean:
-	rm -f $(MAN1)
+test:
+	cd tests && $(PYTHON) -m unittest discover -p 'test_*.py' $(TESTFLAGS)
+
+test-all:
+	cd tests && RRCC_SLOW_TESTS=1 $(PYTHON) -m unittest discover -p 'test_*.py' $(TESTFLAGS)
 
 install: check $(MAN1)
 	$(INSTALL) -d $(DESTDIR)$(BINDIR)
@@ -104,3 +111,7 @@ uninstall:
 	rm -f $(DESTDIR)$(MAN1DIR)/$(notdir $(MAN1)).gz
 	for f in $(DOCS); do rm -f $(DESTDIR)$(DOCDIR)/$$f; done
 	-rmdir $(DESTDIR)$(DOCDIR)
+
+clean:
+	rm -f $(MAN1)
+	find . -name __pycache__ -type d -prune -exec rm -rf {} +

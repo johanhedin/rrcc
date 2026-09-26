@@ -79,3 +79,29 @@ sudo dnf install python3-zstandard zchunk
 ```
 sudo dnf install zchunk
 ```
+
+## Tests
+
+The test suite in `tests/` uses only the Python standard library, like
+`rrcc` itself. Run it with:
+
+```
+make test
+```
+
+It builds small repositories in temporary directories and serves them with
+HTTP, HTTPS and proxy servers inside the test process on `127.0.0.1`, so it
+needs no network access. Choose the Python version with, for example,
+`make test PYTHON=python3.12`, and get a line per test with `TESTFLAGS=-v`.
+
+Tests that need an optional tool or module are skipped when it isn't
+installed: `zck`/`unzck` (zchunk metadata), `python3-zstandard` (zst metadata),
+`python3-rpm` (version comparison against rpm itself) and
+`python3-libmodulemd` (module metadata).
+
+`make test-all` also runs the slow tests, which compare the package selection
+of `--newest-only` with `dnf reposync --newest-only` on random repositories and
+need `dnf` with `dnf-plugins-core`.
+
+The test certificates in `tests/support/pki/` are regenerated with
+`tests/support/make-pki.sh`.
