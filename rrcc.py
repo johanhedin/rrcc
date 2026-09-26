@@ -68,7 +68,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 import zlib
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 NS_REPO = "{http://linux.duke.edu/metadata/repo}"
 NS_COMMON = "{http://linux.duke.edu/metadata/common}"

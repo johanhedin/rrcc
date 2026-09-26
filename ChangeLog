@@ -1,2 +1,5 @@
+* Sat Sep 26 2026 Johan Hedin - 1.1.0
+- Add support for installing on the system using make
+
 * Sat Sep 26 2026 Johan Hedin - 1.0.0
 - Initial release
