@@ -8,6 +8,13 @@ repository is consistent. A repository is consistent if all files referenced
 from the metadata in the `repodata` directory exist and have the correct
 size and, optionally, the correct checksum.
 
+A repository served over HTTP(S) can be checked as well by giving its URL
+instead of a directory, for example `rrcc http://host/path/to/repo`. Only the
+metadata and, with `--checksum`, the packages are downloaded; the presence and
+size of each package is checked with a HEAD request. Connections are kept
+alive and several packages are checked in parallel, by default 8; change that
+with `--jobs`.
+
 A typical use case is mirroring a remote RPM repository and wanting to
 automate checks that tell you whether the mirror is in a usable state.
 

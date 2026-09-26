@@ -1,3 +1,6 @@
+* Sat Sep 26 2026 Johan Hedin - 1.x.y (not released yet)
+- Add support for checking remote repositories over HTTP(S)
+
 * Sat Sep 26 2026 Johan Hedin - 1.1.1
 - Add bash completion
 - Add man page

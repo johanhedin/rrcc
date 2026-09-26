@@ -12,13 +12,22 @@ Single repo:
     /path/to/repo/root is the directory that CONTAINS "repodata/"
     (i.e. the same directory you'd point a baseurl at).
 
+    A remote repository served over HTTP(S) can be checked the same way by
+    giving its URL instead of a directory:
+        rrcc.py [options] http://host/path/to/repo/root
+
+    For a remote repository the metadata is downloaded to a temporary
+    directory, the presence and size of each package is checked with a HEAD
+    request, and (with --checksum) each package is downloaded and hashed.
+
 Multiple repos under a common parent:
     rrcc.py --top-level [options] /path/to/mirrors
 
     Recursively finds every directory under the given path that has a
     "repodata/repomd.xml" in it, and checks each one as a separate repo.
     Useful when you mirror several release/arch trees (or os/debug/source
-    variants) under one parent directory.
+    variants) under one parent directory. For a URL this crawls the
+    directory listings ("Index of ...") that the web server generates.
 
 Options:
     --top-level          Treat the path as a parent directory containing
@@ -27,6 +36,13 @@ Options:
                          Without this flag, only presence + size are checked.
     --extra              Also report *.rpm files on disk that are NOT
                          referenced by primary.xml (orphans / stale files).
+                         For a URL this needs directory listings enabled on
+                         the web server.
+    -j, --jobs N         Check N packages in parallel for a remote repo
+                         (default 8, 1 disables parallelism). Each worker
+                         keeps its own connection to the server alive, so
+                         this is also how many connections are used.
+                         Ignored for directories.
     -v, --verbose        Print a line for every package checked.
     --version            Print the version and exit.
 
@@ -57,16 +73,22 @@ primary.xml compression formats that Python can't read by itself:
 """
 
 import argparse
+import contextlib
 import gzip
 import hashlib
+import http.client
 import lzma
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import xml.etree.ElementTree as ET
 import zlib
+from concurrent.futures import ThreadPoolExecutor
+from html.parser import HTMLParser
+from urllib.parse import quote, unquote, urldefrag, urljoin, urlsplit, urlunsplit
 
 __version__ = "1.1.1"
 
@@ -170,13 +192,270 @@ def open_zstd(path):
     return zstandard.ZstdDecompressor().stream_reader(fh, closefd=True)
 
 
-def find_data_location(repo_root, data_type, required=True):
+HTTP_TIMEOUT = 60  # seconds
+DEFAULT_JOBS = 8   # parallel package checks for remote repos
+
+
+def positive_int(value):
+    try:
+        n = int(value)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"invalid value '{value}': must be an integer >= 1")
+    return n
+
+
+def is_url(path):
+    return path.startswith(("http://", "https://"))
+
+
+def normalize_url(url):
+    """Drop any query/fragment and make sure the URL ends with a slash."""
+    parts = urlsplit(url)
+    path = parts.path if parts.path.endswith("/") else parts.path + "/"
+    return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+
+class LocalRepo:
+    """A repository in a directory on disk. The methods below are what the
+    checker needs from a repo, and are mirrored by HttpRepo. hrefs are the
+    relative paths used in the metadata."""
+
+    def __init__(self, root):
+        self.root = root
+
+    def close(self):
+        pass
+
+    def locate(self, href):
+        """Where href lives, for use in messages."""
+        return os.path.join(self.root, href)
+
+    def metadata_path(self, href):
+        """Path of a local file with the contents of href, or None if the
+        file does not exist."""
+        path = self.locate(href)
+        return path if os.path.isfile(path) else None
+
+    def package_size(self, href):
+        """Size of the file href, or None if it does not exist."""
+        path = self.locate(href)
+        return os.path.getsize(path) if os.path.isfile(path) else None
+
+    def package_checksum_ok(self, href, algo_name, expected_hex):
+        """True/False if the checksum of href matches, None if algo_name is
+        not supported."""
+        with open(self.locate(href), "rb") as f:
+            return verify_checksum(f, algo_name, expected_hex)
+
+    def iter_rpms(self):
+        """Yield the normalized href of every *.rpm below the repo root,
+        except those under repodata/."""
+        for dirpath, _, filenames in os.walk(self.root):
+            if os.sep + "repodata" in dirpath + os.sep:
+                continue
+            for fn in filenames:
+                if fn.endswith(".rpm"):
+                    yield os.path.normpath(os.path.relpath(os.path.join(dirpath, fn), self.root))
+
+
+class HttpStatusError(OSError):
+    """The server answered with an HTTP error status."""
+
+    def __init__(self, code, reason, url):
+        super().__init__(f"HTTP Error {code}: {reason} ({url})")
+        self.code = code
+
+
+class HttpClient:
+    """Minimal HTTP(S) client that keeps connections alive and can be used
+    from several threads at once: every thread gets its own connection per
+    server. Follows redirects and retries once on a connection that the
+    server closed while it was idle."""
+
+    MAX_REDIRECTS = 5
+
+    def __init__(self):
+        self._local = threading.local()
+        self._all = []  # every connection ever opened, so close() can reach them
+        self._lock = threading.Lock()
+
+    def close(self):
+        with self._lock:
+            for conn in self._all:
+                conn.close()
+            self._all.clear()
+
+    def _connection(self, scheme, netloc):
+        conns = self._local.__dict__.setdefault("conns", {})
+        conn = conns.get((scheme, netloc))
+        if conn is None:
+            cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+            conn = conns[(scheme, netloc)] = cls(netloc, timeout=HTTP_TIMEOUT)
+            with self._lock:
+                self._all.append(conn)
+        return conn
+
+    @contextlib.contextmanager
+    def open(self, url, method="GET"):
+        """Context manager yielding the response for url (a 2xx one; any
+        other status raises HttpStatusError). The body must be read within
+        the with block."""
+        for _ in range(self.MAX_REDIRECTS + 1):
+            parts = urlsplit(url)
+            target = parts.path or "/"
+            if parts.query:
+                target += "?" + parts.query
+            conn = self._connection(parts.scheme, parts.netloc)
+            for attempt in (0, 1):
+                try:
+                    conn.request(method, target, headers={"User-Agent": f"rrcc/{__version__}"})
+                    resp = conn.getresponse()
+                    break
+                except (http.client.BadStatusLine, ConnectionError):
+                    conn.close()  # reconnects automatically on the next request
+                    if attempt:
+                        raise
+            if resp.status in (301, 302, 303, 307, 308) and resp.getheader("Location"):
+                url = urljoin(url, resp.getheader("Location"))
+                resp.read()  # drain, so the connection can be reused
+                continue
+            break
+        else:
+            raise HttpStatusError(resp.status, "too many redirects", url)
+
+        try:
+            if resp.status >= 300:
+                resp.read()
+                raise HttpStatusError(resp.status, resp.reason, url)
+            if method == "HEAD":
+                resp.read()  # no body, but http.client only frees the connection after a read
+            yield resp
+        finally:
+            if not resp.isclosed():
+                conn.close()  # body not fully read; the connection can't be reused
+
+
+class HttpRepo:
+    """A repository served over HTTP(S). Metadata files are downloaded to a
+    temporary directory (call close() to remove it). Packages are never
+    stored: their size comes from a HEAD request and their checksum from
+    hashing a streamed GET. Safe to use from several threads, except for
+    metadata_path()."""
+
+    def __init__(self, url, client=None):
+        self.root = normalize_url(url)
+        self._own_client = client is None
+        self.client = HttpClient() if client is None else client
+        self._tmpdir = None
+        self._downloads = {}  # href -> local path (None if missing on the server)
+
+    def close(self):
+        if self._own_client:
+            self.client.close()
+        if self._tmpdir is not None:
+            shutil.rmtree(self._tmpdir, ignore_errors=True)
+            self._tmpdir = None
+
+    def locate(self, href):
+        return urljoin(self.root, quote(href, safe="/"))
+
+    def metadata_path(self, href):
+        if href in self._downloads:
+            return self._downloads[href]
+        if self._tmpdir is None:
+            self._tmpdir = tempfile.mkdtemp(prefix="rrcc-")
+        path = os.path.join(self._tmpdir, f"{len(self._downloads)}-{os.path.basename(href)}")
+        try:
+            with self.client.open(self.locate(href)) as resp, open(path, "wb") as out:
+                shutil.copyfileobj(resp, out)
+        except HttpStatusError as e:
+            if e.code != 404:
+                raise
+            path = None
+        self._downloads[href] = path
+        return path
+
+    def package_size(self, href):
+        try:
+            with self.client.open(self.locate(href), "HEAD") as resp:
+                length = resp.getheader("Content-Length")
+            if length is not None:
+                return int(length)
+            # No Content-Length (e.g. chunked): count the bytes instead
+            with self.client.open(self.locate(href)) as resp:
+                return sum(len(chunk) for chunk in iter(lambda: resp.read(1024 * 1024), b""))
+        except HttpStatusError as e:
+            if e.code == 404:
+                return None
+            raise
+
+    def package_checksum_ok(self, href, algo_name, expected_hex):
+        with self.client.open(self.locate(href)) as resp:
+            return verify_checksum(resp, algo_name, expected_hex)
+
+    def iter_rpms(self):
+        for url in walk_http(self.client, self.root, skip_repodata=True):
+            if url.endswith(".rpm"):
+                yield os.path.normpath(unquote(url[len(self.root):]))
+
+
+class _LinkParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.hrefs = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            for name, value in attrs:
+                if name == "href" and value:
+                    self.hrefs.append(value)
+
+
+def list_http_dir(client, url):
+    """Return (dirs, files) as absolute URLs for the entries linked from the
+    directory listing at url. Sort links, the parent directory and anything
+    outside of url are ignored."""
+    with client.open(url) as resp:
+        html = resp.read().decode("utf-8", errors="replace")
+    parser = _LinkParser()
+    parser.feed(html)
+    dirs, files = [], []
+    for href in parser.hrefs:
+        full = urldefrag(urljoin(url, href))[0]
+        if "?" in full or full == url or not full.startswith(url):
+            continue
+        target = dirs if full.endswith("/") else files
+        if full not in target:
+            target.append(full)
+    return dirs, files
+
+
+def walk_http(client, top, skip_repodata=False):
+    """Yield the URL of every file below the directory URL top, by following
+    the web server's directory listings."""
+    todo = [top]
+    while todo:
+        dirs, files = list_http_dir(client, todo.pop())
+        yield from files
+        for d in dirs:
+            if skip_repodata and d.endswith("/repodata/"):
+                continue
+            todo.append(d)
+
+
+def open_repo(root):
+    return HttpRepo(root) if is_url(root) else LocalRepo(root)
+
+
+def find_data_location(repo, data_type, required=True):
     """Return the href of the <data type="..."> entry in repomd.xml.
     If there is no such entry, raise RuntimeError, or return None when
     required is False."""
-    repomd_path = os.path.join(repo_root, "repodata", "repomd.xml")
-    if not os.path.isfile(repomd_path):
-        raise RuntimeError(f"missing {repomd_path}")
+    repomd_path = repo.metadata_path("repodata/repomd.xml")
+    if repomd_path is None:
+        raise RuntimeError(f"missing {repo.locate('repodata/repomd.xml')}")
 
     tree = ET.parse(repomd_path)
     root = tree.getroot()
@@ -212,20 +491,47 @@ def iter_packages(primary_path):
             elem.clear()
 
 
-def verify_checksum(path, algo_name, expected_hex):
+def verify_checksum(f, algo_name, expected_hex):
+    """Hash the file-like object f. Returns None if the algo is unsupported."""
     hasher = CHECKSUM_ALGO_MAP.get(algo_name.lower())
     if hasher is None:
         return None  # unknown algo, skip
     h = hasher()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
+    for chunk in iter(lambda: f.read(1024 * 1024), b""):
+        h.update(chunk)
     return h.hexdigest() == expected_hex
+
+
+def find_http_repos(top_url):
+    """Like find_repos(), but for a directory URL: follows the web server's
+    directory listings and returns the URLs (with trailing slash) of the
+    repos found."""
+    repos = []
+    todo = [normalize_url(top_url)]
+    client = HttpClient()
+    try:
+        while todo:
+            url = todo.pop()
+            dirs, _files = list_http_dir(client, url)
+            if url + "repodata/" in dirs:
+                try:
+                    with client.open(url + "repodata/repomd.xml", "HEAD"):
+                        repos.append(url)
+                except HttpStatusError as e:
+                    if e.code != 404:
+                        raise
+                dirs.remove(url + "repodata/")
+            todo.extend(dirs)
+    finally:
+        client.close()
+    return sorted(repos)
 
 
 def find_repos(top_level):
     """Recursively find directories under top_level that contain a valid
     repodata/repomd.xml. Does not descend into repodata/ itself."""
+    if is_url(top_level):
+        return find_http_repos(top_level)
     repos = []
     for dirpath, dirnames, _filenames in os.walk(top_level):
         if "repodata" in dirnames:
@@ -249,18 +555,21 @@ def check_one_repo(repo_root, args):
     On 'error', problems is a single-element list with the error message.
     notes is a list of informational lines about what else was checked.
     """
+    repo = open_repo(repo_root)
     try:
-        return _check_one_repo(repo_root, args)
+        return _check_one_repo(repo, args)
     except READ_ERRORS as e:
         return "error", 0, [f"{type(e).__name__}: {e}"], []
+    finally:
+        repo.close()
 
 
-def _compare_primary_zck(repo_root, zck_href, plain):
+def _compare_primary_zck(repo, zck_href, plain):
     """Cross-check the primary_zck metadata against the plain primary.
     plain maps normalized href -> (size, checksum_type, checksum) as read
     from the plain primary. Returns (problems, note)."""
-    zck_path = os.path.join(repo_root, zck_href)
-    if not os.path.isfile(zck_path):
+    zck_path = repo.metadata_path(zck_href)
+    if zck_path is None:
         return [f"PRIMARY_ZCK MISSING: listed in repomd.xml but not on disk: {zck_href}"], None
 
     problems = []
@@ -282,17 +591,58 @@ def _compare_primary_zck(repo_root, zck_href, plain):
     return problems, f"primary_zck cross-checked against primary ({len(zck_seen)} packages)"
 
 
-def _check_one_repo(repo_root, args):
+def check_package(repo, pkg, verify):
+    """Check one package from primary.xml against the repo. Returns
+    (pkg, problem, is_ok): problem is a message or None, and is_ok says
+    whether the package should be reported as OK (a skipped checksum
+    still counts as OK, but comes with a warning as the problem)."""
+    href = pkg["href"]
+    result = True  # checksum result: True/False, or None if the algo is unsupported
     try:
-        primary_href = find_data_location(repo_root, "primary")
+        actual_size = repo.package_size(href)
+        if actual_size is None:
+            return pkg, f"MISSING: {href}", False
+
+        if pkg["size"] is not None and actual_size != pkg["size"]:
+            # no point checksumming a truncated/corrupt file
+            return pkg, f"SIZE MISMATCH: {href} (expected {pkg['size']}, got {actual_size})", False
+
+        if verify and pkg["checksum_type"] and pkg["checksum"]:
+            result = repo.package_checksum_ok(href, pkg["checksum_type"], pkg["checksum"])
+    except OSError as e:
+        return pkg, f"UNREADABLE: {href}: {type(e).__name__}: {e}", False
+
+    if result is False:
+        return pkg, f"CHECKSUM MISMATCH: {href}", False
+    if result is None:
+        return pkg, f"WARNING: unsupported checksum algo '{pkg['checksum_type']}' for {href}, skipped", True
+    return pkg, None, True
+
+
+def check_packages(repo, primary_path, args):
+    """Yield check_package() results for every package in primary.xml, in
+    the order they are listed. Remote repos are checked by args.jobs
+    threads at a time; a local repo is checked in the calling thread."""
+    packages = iter_packages(primary_path)
+    if args.jobs <= 1 or not isinstance(repo, HttpRepo):
+        for pkg in packages:
+            yield check_package(repo, pkg, args.checksum)
+        return
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        yield from pool.map(lambda pkg: check_package(repo, pkg, args.checksum), packages)
+
+
+def _check_one_repo(repo, args):
+    try:
+        primary_href = find_data_location(repo, "primary")
     except RuntimeError as e:
         return "error", 0, [str(e)], []
 
-    primary_path = os.path.join(repo_root, primary_href)
-    if not os.path.isfile(primary_path):
-        return "error", 0, [f"primary metadata file listed in repomd.xml is missing: {primary_path}"], []
+    primary_path = repo.metadata_path(primary_href)
+    if primary_path is None:
+        return "error", 0, [f"primary metadata file listed in repomd.xml is missing: {repo.locate(primary_href)}"], []
 
-    zck_href = find_data_location(repo_root, "primary_zck", required=False)
+    zck_href = find_data_location(repo, "primary_zck", required=False)
 
     problems = []
     notes = []
@@ -300,50 +650,30 @@ def _check_one_repo(repo_root, args):
     plain = {}  # normalized href -> (size, checksum_type, checksum), for the primary_zck cross-check
     count = 0
 
-    for pkg in iter_packages(primary_path):
+    for pkg, problem, is_ok in check_packages(repo, primary_path, args):
         count += 1
         href = pkg["href"]
         seen_hrefs.add(os.path.normpath(href))
         plain[os.path.normpath(href)] = (pkg["size"], pkg["checksum_type"], pkg["checksum"])
-        full_path = os.path.join(repo_root, href)
 
-        if not os.path.isfile(full_path):
-            problems.append(f"MISSING: {href}")
-            continue
-
-        if pkg["size"] is not None:
-            actual_size = os.path.getsize(full_path)
-            if actual_size != pkg["size"]:
-                problems.append(f"SIZE MISMATCH: {href} (expected {pkg['size']}, got {actual_size})")
-                continue  # no point checksumming a truncated/corrupt file
-
-        if args.checksum and pkg["checksum_type"] and pkg["checksum"]:
-            ok = verify_checksum(full_path, pkg["checksum_type"], pkg["checksum"])
-            if ok is False:
-                problems.append(f"CHECKSUM MISMATCH: {href}")
-                continue
-            elif ok is None:
-                problems.append(f"WARNING: unsupported checksum algo '{pkg['checksum_type']}' for {href}, skipped")
-
-        if args.verbose:
+        if problem:
+            problems.append(problem)
+        if is_ok and args.verbose:
             print(f"  OK: {href}")
 
     if zck_href is not None:
-        zck_problems, note = _compare_primary_zck(repo_root, zck_href, plain)
+        zck_problems, note = _compare_primary_zck(repo, zck_href, plain)
         problems.extend(zck_problems)
         if note:
             notes.append(note)
 
     if args.extra:
-        for dirpath, _, filenames in os.walk(repo_root):
-            if os.sep + "repodata" in dirpath + os.sep:
-                continue
-            for fn in filenames:
-                if not fn.endswith(".rpm"):
-                    continue
-                rel = os.path.normpath(os.path.relpath(os.path.join(dirpath, fn), repo_root))
+        try:
+            for rel in repo.iter_rpms():
                 if rel not in seen_hrefs:
                     problems.append(f"ORPHAN (on disk, not in metadata): {rel}")
+        except OSError as e:
+            problems.append(f"CANNOT LIST FILES for --extra: {type(e).__name__}: {e}")
 
     status = "problems" if problems else "ok"
     return status, count, problems, notes
@@ -352,11 +682,15 @@ def _check_one_repo(repo_root, args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("paths", nargs="+", metavar="path",
-                    help="repo root(s), or (with --top-level) parent directories of multiple repos")
+                    help="repo root(s), or (with --top-level) parent directories of multiple repos; "
+                         "a directory or an http(s):// URL")
     ap.add_argument("--top-level", action="store_true",
                      help="treat each 'path' as a parent dir; auto-discover repos under it")
     ap.add_argument("--checksum", action="store_true", help="also verify checksums (slow)")
     ap.add_argument("--extra", action="store_true", help="report on-disk RPMs not in metadata")
+    ap.add_argument("-j", "--jobs", type=positive_int, default=DEFAULT_JOBS, metavar="N",
+                    help=f"number of packages to check in parallel for http(s):// repos "
+                         f"(default: {DEFAULT_JOBS}; 1 disables parallelism); ignored for directories")
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--version", action="version", version=f"rrcc {__version__}",
                     help="print the version and exit")
@@ -376,17 +710,26 @@ def main():
             repos.append((label, root))
 
     for path in args.paths:
-        top_path = os.path.abspath(path)
+        top_path = normalize_url(path) if is_url(path) else os.path.abspath(path)
         if args.top_level:
-            found = find_repos(top_path)
+            try:
+                found = find_repos(top_path)
+            except OSError as e:
+                print(f"ERROR: cannot search {top_path}: {type(e).__name__}: {e}", file=sys.stderr)
+                overall_error = True
+                continue
             if not found:
                 print(f"ERROR: no repos found under {top_path} (looked for */repodata/repomd.xml)", file=sys.stderr)
                 overall_error = True
                 continue
+
+            def rel(r):
+                return r[len(top_path):] or "." if is_url(top_path) else os.path.relpath(r, top_path)
+
             print(f"Found {len(found)} repo(s) under {top_path}:")
             for r in found:
-                print(f"  {os.path.relpath(r, top_path)}")
-                add_repo(r if len(args.paths) > 1 else os.path.relpath(r, top_path), r)
+                print(f"  {rel(r)}")
+                add_repo(r if len(args.paths) > 1 else rel(r), r)
             print()
         else:
             add_repo(top_path, top_path)
