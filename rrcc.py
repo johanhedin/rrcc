@@ -29,6 +29,12 @@ Options:
                          referenced by primary.xml (orphans / stale files).
     -v, --verbose        Print a line for every package checked.
 
+If repomd.xml also lists a "primary_zck" entry (the zchunk-compressed copy
+of primary.xml that createrepo_c --zck produces), it is cross-checked against
+the plain primary: it must exist, be readable, and list exactly the same
+packages with the same sizes and checksums. This needs 'unzck' (see below),
+and is reported as a problem if the file can't be read.
+
 Exit status:
     0   everything checked is consistent
     1   at least one problem found in at least one repo
@@ -161,7 +167,10 @@ def open_zstd(path):
     return zstandard.ZstdDecompressor().stream_reader(fh, closefd=True)
 
 
-def find_primary_location(repo_root):
+def find_data_location(repo_root, data_type, required=True):
+    """Return the href of the <data type="..."> entry in repomd.xml.
+    If there is no such entry, raise RuntimeError, or return None when
+    required is False."""
     repomd_path = os.path.join(repo_root, "repodata", "repomd.xml")
     if not os.path.isfile(repomd_path):
         raise RuntimeError(f"missing {repomd_path}")
@@ -169,12 +178,14 @@ def find_primary_location(repo_root):
     tree = ET.parse(repomd_path)
     root = tree.getroot()
     for data_el in root.findall(f"{NS_REPO}data"):
-        if data_el.get("type") == "primary":
+        if data_el.get("type") == data_type:
             loc = data_el.find(f"{NS_REPO}location")
             if loc is None or "href" not in loc.attrib:
-                raise RuntimeError("primary <location> missing href in repomd.xml")
+                raise RuntimeError(f"{data_type} <location> missing href in repomd.xml")
             return loc.attrib["href"]
-    raise RuntimeError('no <data type="primary"> entry found in repomd.xml')
+    if required:
+        raise RuntimeError(f'no <data type="{data_type}"> entry found in repomd.xml')
+    return None
 
 
 def iter_packages(primary_path):
@@ -230,34 +241,67 @@ READ_ERRORS = (RuntimeError, ET.ParseError, OSError, EOFError,
 
 
 def check_one_repo(repo_root, args):
-    """Returns (status, count, problems).
+    """Returns (status, count, problems, notes).
     status is one of 'ok', 'problems', 'error'.
     On 'error', problems is a single-element list with the error message.
+    notes is a list of informational lines about what else was checked.
     """
     try:
         return _check_one_repo(repo_root, args)
     except READ_ERRORS as e:
-        return "error", 0, [f"{type(e).__name__}: {e}"]
+        return "error", 0, [f"{type(e).__name__}: {e}"], []
+
+
+def _compare_primary_zck(repo_root, zck_href, plain):
+    """Cross-check the primary_zck metadata against the plain primary.
+    plain maps normalized href -> (size, checksum_type, checksum) as read
+    from the plain primary. Returns (problems, note)."""
+    zck_path = os.path.join(repo_root, zck_href)
+    if not os.path.isfile(zck_path):
+        return [f"PRIMARY_ZCK MISSING: listed in repomd.xml but not on disk: {zck_href}"], None
+
+    problems = []
+    zck_seen = set()
+    try:
+        for pkg in iter_packages(zck_path):
+            href = os.path.normpath(pkg["href"])
+            zck_seen.add(href)
+            if href not in plain:
+                problems.append(f"PRIMARY_ZCK EXTRA: in primary_zck but not in primary: {pkg['href']}")
+            elif plain[href] != (pkg["size"], pkg["checksum_type"], pkg["checksum"]):
+                problems.append(f"PRIMARY_ZCK MISMATCH: size/checksum differs from primary: {pkg['href']}")
+    except READ_ERRORS as e:
+        return [f"PRIMARY_ZCK UNREADABLE: {zck_href}: {type(e).__name__}: {e}"], None
+
+    for href in sorted(set(plain) - zck_seen):
+        problems.append(f"PRIMARY_ZCK MISSING PACKAGE: in primary but not in primary_zck: {href}")
+
+    return problems, f"primary_zck cross-checked against primary ({len(zck_seen)} packages)"
 
 
 def _check_one_repo(repo_root, args):
     try:
-        primary_href = find_primary_location(repo_root)
+        primary_href = find_data_location(repo_root, "primary")
     except RuntimeError as e:
-        return "error", 0, [str(e)]
+        return "error", 0, [str(e)], []
 
     primary_path = os.path.join(repo_root, primary_href)
     if not os.path.isfile(primary_path):
-        return "error", 0, [f"primary metadata file listed in repomd.xml is missing: {primary_path}"]
+        return "error", 0, [f"primary metadata file listed in repomd.xml is missing: {primary_path}"], []
+
+    zck_href = find_data_location(repo_root, "primary_zck", required=False)
 
     problems = []
+    notes = []
     seen_hrefs = set()
+    plain = {}  # normalized href -> (size, checksum_type, checksum), for the primary_zck cross-check
     count = 0
 
     for pkg in iter_packages(primary_path):
         count += 1
         href = pkg["href"]
         seen_hrefs.add(os.path.normpath(href))
+        plain[os.path.normpath(href)] = (pkg["size"], pkg["checksum_type"], pkg["checksum"])
         full_path = os.path.join(repo_root, href)
 
         if not os.path.isfile(full_path):
@@ -281,6 +325,12 @@ def _check_one_repo(repo_root, args):
         if args.verbose:
             print(f"  OK: {href}")
 
+    if zck_href is not None:
+        zck_problems, note = _compare_primary_zck(repo_root, zck_href, plain)
+        problems.extend(zck_problems)
+        if note:
+            notes.append(note)
+
     if args.extra:
         for dirpath, _, filenames in os.walk(repo_root):
             if os.sep + "repodata" in dirpath + os.sep:
@@ -293,7 +343,7 @@ def _check_one_repo(repo_root, args):
                     problems.append(f"ORPHAN (on disk, not in metadata): {rel}")
 
     status = "problems" if problems else "ok"
-    return status, count, problems
+    return status, count, problems, notes
 
 
 def main():
@@ -338,7 +388,7 @@ def main():
 
     for label, repo_root in repos:
         print(f"=== {label} ===")
-        status, count, problems = check_one_repo(repo_root, args)
+        status, count, problems, notes = check_one_repo(repo_root, args)
         total_packages += count
 
         if status == "error":
@@ -352,6 +402,8 @@ def main():
         else:
             print(f"  {count} packages checked, consistent"
                   + (" (checksums verified)." if args.checksum else " (size-checked)."))
+        for note in notes:
+            print(f"  {note}")
         print()
 
     print(f"Summary: {len(repos)} repo(s), {total_packages} package(s) checked total.")
