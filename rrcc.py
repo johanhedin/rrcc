@@ -437,10 +437,22 @@ class HttpRepo:
     def __init__(self, url, ssl_context=None):
         self.root = normalize_url(url)
         self.client = HttpClient(ssl_context)
+        self._pool = None
         self._tmpdir = None
         self._downloads = {}  # href -> local path (None if missing on the server)
 
+    def pool(self, jobs):
+        """The worker threads for checking files in parallel. The same pool
+        is used for the whole repo, as every thread keeps its own
+        connections to the server."""
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=jobs)
+        return self._pool
+
     def close(self):
+        if self._pool is not None:
+            self._pool.shutdown()
+            self._pool = None
         self.client.close()
         if self._tmpdir is not None:
             shutil.rmtree(self._tmpdir, ignore_errors=True)
@@ -1021,8 +1033,7 @@ def check_packages(repo, packages, args, verify=None):
     if args.jobs <= 1 or not isinstance(repo, HttpRepo):
         yield from map(check, packages)
         return
-    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        yield from pool.map(check, packages)
+    yield from repo.pool(args.jobs).map(check, packages)
 
 
 def verify_metadata(repo, entries, args):
