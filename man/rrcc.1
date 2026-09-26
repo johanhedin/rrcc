@@ -1,0 +1,158 @@
+.TH RRCC 1 "September 2026" "1.0.0" "User Commands"
+.SH NAME
+rrcc \- RPM Repository Consistency Checker
+.SH SYNOPSIS
+.B rrcc
+[\fIoptions\fR]
+.IR path " [" path " ...]"
+.br
+.SH DESCRIPTION
+.B rrcc
+verifies that a local RPM repository, typically a mirror of a remote
+repository, is consistent with its own metadata.
+Every package listed in the repository's
+.I primary.xml
+must exist on disk and have the size recorded in the metadata.
+Optionally, the checksum of each package is verified as well and files on disk
+that are not referenced by the metadata are reported.
+.PP
+Each
+.I path
+must be the directory that
+.B contains
+the
+.I repodata
+directory, that is, the same directory that would be used as a
+.I baseurl
+in a repository definition.
+With
+.BR \-\-top\-level ,
+each
+.I path
+is instead treated as a parent directory that is searched recursively for
+repositories.
+.PP
+If
+.I repomd.xml
+also lists a
+.I primary_zck
+entry (the zchunk-compressed copy of
+.I primary.xml
+produced by
+.BR "createrepo_c \-\-zck" ),
+it is cross-checked against the plain primary metadata.
+It must exist, be readable, and list exactly the same packages with the same
+sizes and checksums.
+A
+.I primary_zck
+file that cannot be read is reported as a problem.
+.SH OPTIONS
+.TP
+.B \-\-top\-level
+Treat each
+.I path
+as a parent directory containing multiple repositories.
+Every directory below it that contains
+.I repodata/repomd.xml
+is found automatically and checked as a separate repository.
+This is useful when several release or architecture trees, or
+.IR os / debug / source
+variants, are mirrored under one parent directory.
+.TP
+.B \-\-checksum
+Also verify the checksum of every package.
+This is slow because every RPM file has to be read.
+Without this option only the presence and size of each package are checked.
+.TP
+.B \-\-extra
+Also report
+.I *.rpm
+files found on disk that are not referenced by
+.IR primary.xml ,
+such as orphaned or stale files.
+.TP
+.BR \-v ", " \-\-verbose
+Print a line for every package checked.
+.TP
+.B \-\-version
+Print the version and exit.
+.TP
+.BR \-h ", " \-\-help
+Show a help message and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+Everything checked is consistent.
+.TP
+.B 1
+At least one problem was found in at least one repository.
+.TP
+.B 2
+The metadata could not be read for one or more repositories, or no
+repositories were found under a
+.B \-\-top\-level
+path.
+.SH REQUIREMENTS
+.B rrcc
+runs on Python 3.6 or newer and uses only the Python standard library, except
+for the following optional cases that depend on the compression format of the
+repository metadata:
+.TP
+.I .gz " and " .xz
+Always handled by the Python standard library.
+.TP
+.I .zst
+Requires Python 3.14 or newer (standard library module
+.IR compression.zstd )
+or the third-party
+.I zstandard
+Python module (package
+.IR python3\-zstandard ).
+.TP
+.I .zck
+Requires the external
+.B unzck
+command from the
+.I zchunk
+package, which must be in
+.IR PATH .
+This works on any Python version.
+On RHEL and derivatives the package is in EPEL.
+.SH EXAMPLES
+Check a single repository for presence and size of all packages:
+.PP
+.RS
+.nf
+rrcc /srv/mirror/rocky/9/BaseOS/x86_64/os
+.fi
+.RE
+.PP
+Check every repository below a mirror directory, verifying checksums and
+reporting orphaned files:
+.PP
+.RS
+.nf
+rrcc \-\-top\-level \-\-checksum \-\-extra /srv/mirror
+.fi
+.RE
+.PP
+Use in a script after a mirror run:
+.PP
+.RS
+.nf
+reposync ... && rrcc /srv/mirror/myrepo || echo "mirror is broken"
+.fi
+.RE
+.SH HOMEPAGE
+The source code, issue tracker and latest release of
+.B rrcc
+are available at
+.UR https://github.com/johanhedin/rrcc
+.UE .
+.SH AUTHOR
+Johan Hedin
+.SH SEE ALSO
+.BR createrepo_c (8),
+.BR dnf (8),
+.BR reposync (1),
+.BR unzck (1)
