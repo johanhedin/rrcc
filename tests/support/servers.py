@@ -185,6 +185,10 @@ class TLSServer(StaticServer):
         return f"https://localhost:{self.port}/"
 
 
+# The proxy only forwards to the test servers, never anywhere else.
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
+
+
 class _ProxyHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     disable_nagle_algorithm = True
@@ -220,9 +224,12 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
             return
         if not self._authorized():
             return
-        self.owner.bump(self.command)
         target = urlsplit(self.path)
-        conn = http.client.HTTPConnection(target.netloc, timeout=30)
+        if target.hostname not in _LOOPBACK_HOSTS:
+            self.send_error(403, "Only loopback targets are allowed")
+            return
+        self.owner.bump(self.command)
+        conn = http.client.HTTPConnection(target.hostname, target.port or 80, timeout=30)
         try:
             conn.request(self.command, (target.path or "/") + ("?" + target.query if target.query else ""))
             resp = conn.getresponse()
@@ -245,8 +252,11 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
     def do_CONNECT(self):
         if not self._authorized():
             return
-        self.owner.bump("CONNECT")
         host, port = self.path.rsplit(":", 1)
+        if host not in _LOOPBACK_HOSTS:
+            self.send_error(403, "Only loopback targets are allowed")
+            return
+        self.owner.bump("CONNECT")
         upstream = socket.create_connection((host, int(port)), timeout=30)
         self.send_response(200, "Connection established")
         self.end_headers()
