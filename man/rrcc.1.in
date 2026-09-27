@@ -95,6 +95,23 @@ files found on disk that are not referenced by
 such as orphaned or stale files.
 For a URL this requires that the web server has directory listings enabled.
 .TP
+.BI \-\-max\-age " DAYS"
+Report a repository whose
+.I repomd.xml
+is more than
+.I DAYS
+days old as a problem.
+The age is taken from the newest
+.I <timestamp>
+of the entries in
+.IR repomd.xml ,
+which is when the metadata was generated, not from the modification time of
+the file.
+.I DAYS
+can be a fraction, such as 0.5 for twelve hours.
+A repository without any timestamp is reported as a problem too.
+This catches a mirror that is consistent but is no longer being synced.
+.TP
 .BR \-n ", " \-\-newest\-only
 Only check the latest version of each package listed in
 .IR primary.xml ,
@@ -312,6 +329,15 @@ Use in a script after a mirror run:
 .RS
 .nf
 reposync ... && rrcc /srv/mirror/myrepo || echo "mirror is broken"
+.fi
+.RE
+.PP
+Check from a separate monitoring job that a mirror synced within the last two
+days:
+.PP
+.RS
+.nf
+rrcc \-\-max\-age 2 /srv/mirror/myrepo
 .fi
 .RE
 .SH HOMEPAGE

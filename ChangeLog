@@ -12,6 +12,8 @@
 - Fix CodeQL findings in the test suite
 - Add zsh and fish completions, installed by 'make install' next to the
   bash completion, which has moved to completions/rrcc.bash
+- Add --max-age to report repositories whose metadata is older than a
+  number of days
 
 * Sat Sep 26 2026 Johan Hedin - 1.4.0
 - Add a test suite, run with 'make test' and 'make test-all'

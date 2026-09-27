@@ -46,6 +46,10 @@ Options:
                          referenced by primary.xml (orphans / stale files).
                          For a URL this needs directory listings enabled on
                          the web server.
+    --max-age DAYS       Report a repo whose repomd.xml is older than DAYS days
+                         (a fraction like 0.5 works too), going by the newest
+                         <timestamp> in it. Catches a mirror that is consistent
+                         but no longer being synced.
     -n, --newest-only    Only check the latest version of each package (per name
                          and architecture) listed in primary.xml, and skip the
                          older ones. Same as 'dnf reposync --newest-only', so
@@ -126,6 +130,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import xml.etree.ElementTree as ET
 import urllib.request
 import zlib
@@ -253,6 +258,16 @@ def positive_int(value):
     if n < 1:
         raise argparse.ArgumentTypeError(f"invalid value '{value}': must be an integer >= 1")
     return n
+
+
+def positive_float(value):
+    try:
+        x = float(value)
+    except ValueError:
+        x = 0
+    if not x > 0 or x == float("inf"):
+        raise argparse.ArgumentTypeError(f"invalid value '{value}': must be a number > 0")
+    return x
 
 
 def is_url(path):
@@ -700,9 +715,10 @@ def make_ssl_context(args):
 
 def read_repomd(repo):
     """Return the <data> entries of repomd.xml as dicts {type, href, size,
-    checksum_type, checksum}, with the same keys as iter_packages() uses
-    for the fields that describe a file. size and the checksum fields are
-    None if not given."""
+    checksum_type, checksum, timestamp}, with the same keys as
+    iter_packages() uses for the fields that describe a file. size, the
+    checksum fields and timestamp (seconds since the epoch) are None if not
+    given; an invalid timestamp is None too."""
     repomd_path = repo.metadata_path("repodata/repomd.xml", MAX_REPOMD_SIZE)
     if repomd_path is None:
         raise RuntimeError(f"missing {repo.locate('repodata/repomd.xml')}")
@@ -715,6 +731,11 @@ def read_repomd(repo):
             raise RuntimeError(f"{data_type} <location> missing href in repomd.xml")
         csum_el = data_el.find(f"{NS_REPO}checksum")
         size_el = data_el.find(f"{NS_REPO}size")
+        ts_el = data_el.find(f"{NS_REPO}timestamp")
+        try:
+            timestamp = int(float(ts_el.text))
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            timestamp = None
         try:
             size = int(size_el.text) if size_el is not None else None
         except (TypeError, ValueError):
@@ -725,6 +746,7 @@ def read_repomd(repo):
             "size": size,
             "checksum_type": csum_el.get("type") if csum_el is not None else None,
             "checksum": csum_el.text.strip() if csum_el is not None and csum_el.text else None,
+            "timestamp": timestamp,
         })
     return entries
 
@@ -1199,6 +1221,26 @@ def verify_metadata(repo, entries, args):
     return problems, note
 
 
+def check_age(entries, max_age):
+    """Check that the newest <timestamp> in repomd.xml is at most max_age
+    days old. Returns (problems, note)."""
+    timestamps = [e["timestamp"] for e in entries if e["timestamp"] is not None]
+    if not timestamps:
+        return ["NO TIMESTAMP: repomd.xml has no <timestamp>, cannot check --max-age"], None
+    newest = max(timestamps)
+    try:
+        when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(newest))
+    except (OverflowError, OSError, ValueError):
+        when = str(newest)
+    days = (time.time() - newest) / 86400
+    if days < 0:
+        return [], f"repomd.xml timestamp is in the future ({when})"
+    if days > max_age:
+        return [f"STALE: repomd.xml is {days:.1f} days old (newest timestamp {when}, "
+                f"--max-age {max_age:g})"], None
+    return [], f"repomd.xml is {days:.1f} days old (newest timestamp {when})"
+
+
 def _check_one_repo(repo, args):
     try:
         entries = read_repomd(repo)
@@ -1272,6 +1314,13 @@ def _check_one_repo(repo, args):
     problems[:0] = meta_problems
     notes.insert(0, note)
 
+    # The age is what matters most when it is checked, so it goes first.
+    if args.max_age is not None:
+        age_problems, note = check_age(entries, args.max_age)
+        problems[:0] = age_problems
+        if note:
+            notes.insert(0, note)
+
     if args.extra:
         try:
             for rel in repo.iter_rpms():
@@ -1293,6 +1342,8 @@ def main():
                      help="treat each 'path' as a parent dir; auto-discover repos under it")
     ap.add_argument("--checksum", action="store_true", help="also verify checksums (slow)")
     ap.add_argument("--extra", action="store_true", help="report on-disk RPMs not in metadata")
+    ap.add_argument("--max-age", type=positive_float, metavar="DAYS",
+                    help="report a repo whose repomd.xml is older than DAYS days (a fraction works too)")
     ap.add_argument("-n", "--newest-only", action="store_true",
                     help="only check the latest version of each package (like dnf reposync --newest-only)")
     ap.add_argument("--ignore-modules", action="store_true",

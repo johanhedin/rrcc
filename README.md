@@ -31,6 +31,10 @@ Modular repositories are handled like dnf 4 (RHEL 8 to 10) does; add
 `--ignore-modules` for a mirror made with dnf 5 (Fedora 41 and newer), which
 ignores the modules.
 
+With `--max-age DAYS` a repository whose `repomd.xml` is older than that is
+reported as a problem, which catches a mirror that is consistent but has
+stopped syncing.
+
 A typical use case is mirroring a remote RPM repository and wanting to
 automate checks that tell you whether the mirror is in a usable state.
 
