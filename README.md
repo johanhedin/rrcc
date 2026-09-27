@@ -1,6 +1,7 @@
 # RPM Repository Consistency Checker
 
 [![CI](https://github.com/johanhedin/rrcc/actions/workflows/ci.yml/badge.svg)](https://github.com/johanhedin/rrcc/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/johanhedin/rrcc/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/johanhedin/rrcc/security/code-scanning)
 
 This repository contains a Python script called `rrcc`, which stands
 for "RPM Repository Consistency Checker".
