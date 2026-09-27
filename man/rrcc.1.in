@@ -189,8 +189,11 @@ and plain ASCII unless the terminal's encoding is UTF-8.
 .B \-\-version
 Print the version and exit.
 .TP
-.BR \-h ", " \-\-help
-Show a help message and exit.
+.B \-h
+Show a short help, with a one-line description of each option, and exit.
+.TP
+.B \-\-help
+Show the full help, with a longer description of each option, and exit.
 .SS "TLS options"
 These options only apply to repositories given as
 .I https://

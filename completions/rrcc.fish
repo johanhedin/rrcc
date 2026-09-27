@@ -3,7 +3,8 @@
 # Positional arguments are repo root directories (URLs are not completed)
 complete -c rrcc -f -a '(__fish_complete_directories (commandline -ct) "Repo root")'
 
-complete -c rrcc -s h -l help -d 'Show help and exit'
+complete -c rrcc -s h -d 'Show a short help and exit'
+complete -c rrcc -l help -d 'Show the full help and exit'
 complete -c rrcc -l version -d 'Print the version and exit'
 complete -c rrcc -l top-level -d 'Treat each path as a parent dir, auto-discover repos under it'
 complete -c rrcc -l checksum -d 'Also verify checksums (slow)'

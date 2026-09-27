@@ -2,7 +2,8 @@
 # zsh completion for rrcc (RPM Repository Consistency Checker)
 
 _arguments -s -S \
-    '(- *)'{-h,--help}'[show help and exit]' \
+    '(- *)-h[show a short help and exit]' \
+    '(- *)--help[show the full help and exit]' \
     '(- *)--version[print the version and exit]' \
     '--top-level[treat each path as a parent dir, auto-discover repos under it]' \
     '--checksum[also verify checksums (slow)]' \

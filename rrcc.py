@@ -34,61 +34,10 @@ Multiple repos under a common parent:
     Useful when you mirror several release/arch trees (or os/debug/source
     variants) under one parent directory. For a URL this crawls the
     directory listings ("Index of ...") that the web server generates.
+"""
 
-Options:
-    --top-level          Treat the path as a parent directory containing
-                         multiple repos; auto-discover and check each one.
-    --checksum           Verify checksums too (slow: reads every RPM).
-                         Without this flag, only presence + size are checked.
-                         For a remote repo this also verifies the checksum of
-                         every metadata file, which downloads all of them.
-    --extra              Also report *.rpm files on disk that are NOT
-                         referenced by primary.xml (orphans / stale files).
-                         For a URL this needs directory listings enabled on
-                         the web server.
-    --max-age DAYS       Report a repo whose repomd.xml is older than DAYS days
-                         (a fraction like 0.5 works too), going by the newest
-                         <timestamp> in it. Catches a mirror that is consistent
-                         but no longer being synced.
-    -n, --newest-only    Only check the latest version of each package (per name
-                         and architecture) listed in primary.xml, and skip the
-                         older ones. Same as 'dnf reposync --newest-only', so
-                         use it to check a mirror made that way. Modular
-                         repos are handled like dnf 4 does it (the module
-                         metadata in modules.yaml is read).
-    --ignore-modules     With --newest-only, ignore the module metadata and
-                         just keep the latest version of each package, like
-                         dnf 5 (Fedora 41+) does. Use it for a mirror of a
-                         modular repo made with dnf 5's reposync.
-    -j, --jobs N         Check N packages in parallel for a remote repo
-                         (default 8, 1 disables parallelism). Each worker
-                         keeps its own connection to the server alive, so
-                         this is also how many connections are used.
-                         Ignored for directories.
-    -q, --quiet          Print only the repos that have problems, and nothing
-                         at all if every repo is consistent (for cron).
-    -v, --verbose        Print a line for every package checked.
-    --no-progress        Don't show a progress line. By default it is shown on
-                         stderr when that is a terminal (not with -q or -v),
-                         once a repo takes more than half a second.
-
-TLS options for https:// repos (named after the dnf repo settings sslcacert,
-sslclientcert, sslclientkey and sslverify):
-    --ca-cert FILE       Trust only the CA certificate(s) in this PEM file (or
-                         directory hashed by 'openssl rehash') instead of the
-                         system CAs. For the RHEL CDN: /etc/rhsm/ca/redhat-uep.pem
-    --client-cert FILE   Authenticate with this client certificate (PEM). For
-                         the RHEL CDN: /etc/pki/entitlement/<serial>.pem
-    --client-key FILE    Private key for --client-cert, unless it is in the
-                         same file. Encrypted keys are not supported. For the
-                         RHEL CDN: /etc/pki/entitlement/<serial>-key.pem
-    -k, --insecure       Don't verify the server certificate (sslverify=0).
-    --no-strict-x509     Accept a server certificate that verifies but doesn't
-                         follow RFC 5280 strictly, e.g. one from a home-made CA
-                         without an Authority Key Identifier. Python 3.13+
-                         rejects those by default, unlike curl and dnf.
-    --version            Print the version and exit.
-
+# The end of --help, after the options. -h leaves it out.
+HELP_NOTES = """\
 If repomd.xml also lists a "primary_zck" entry (the zchunk-compressed copy
 of primary.xml that createrepo_c --zck produces), it is cross-checked against
 the plain primary: it must exist, be readable, and list exactly the same
@@ -138,6 +87,7 @@ import string
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -277,6 +227,30 @@ def positive_float(value):
     if not x > 0 or x == float("inf"):
         raise argparse.ArgumentTypeError(f"invalid value '{value}': must be a number > 0")
     return x
+
+
+class HelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Keeps the layout of the description and epilog, and doesn't split
+    paths like /etc/rhsm/ca/redhat-uep.pem at a hyphen."""
+
+    def _split_lines(self, text, width):
+        return textwrap.wrap(" ".join(text.split()), width, break_on_hyphens=False)
+
+
+class FullHelpAction(argparse.Action):
+    """--help: like -h, but with the whole description, the long help of
+    each option (its long_help attribute, if it has one) and HELP_NOTES."""
+
+    def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS, help=None):
+        super().__init__(option_strings, dest=dest, default=default, nargs=0, help=help)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        for action in parser._actions:
+            action.help = getattr(action, "long_help", action.help)
+        parser.description = __doc__
+        parser.epilog = HELP_NOTES
+        parser.print_help()
+        parser.exit()
 
 
 def is_url(path):
@@ -1610,48 +1584,103 @@ def _check_one_repo(repo, args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("paths", nargs="+", metavar="path",
-                    help="repo root(s), or (with --top-level) parent directories of multiple repos; "
-                         "a directory or an http(s):// URL")
-    ap.add_argument("--top-level", action="store_true",
-                     help="treat each 'path' as a parent dir; auto-discover repos under it")
-    ap.add_argument("--checksum", action="store_true", help="also verify checksums (slow)")
-    ap.add_argument("--extra", action="store_true", help="report on-disk RPMs not in metadata")
-    ap.add_argument("--max-age", type=positive_float, metavar="DAYS",
-                    help="report a repo whose repomd.xml is older than DAYS days (a fraction works too)")
-    ap.add_argument("-n", "--newest-only", action="store_true",
-                    help="only check the latest version of each package (like dnf reposync --newest-only)")
-    ap.add_argument("--ignore-modules", action="store_true",
-                    help="with --newest-only: ignore module metadata, like dnf 5's reposync does")
-    ap.add_argument("-j", "--jobs", type=positive_int, default=DEFAULT_JOBS, metavar="N",
-                    help=f"number of packages to check in parallel for http(s):// repos "
-                         f"(default: {DEFAULT_JOBS}; 1 disables parallelism); ignored for directories")
-    tls = ap.add_argument_group("TLS options for https:// repos (like sslcacert, sslclientcert, "
-                                "sslclientkey and sslverify in dnf)")
-    tls.add_argument("--ca-cert", metavar="FILE",
-                     help="trust only the CA certificate(s) in this PEM file, or in this directory "
-                          "(hashed as by openssl rehash), instead of the system CAs")
-    tls.add_argument("--client-cert", metavar="FILE",
-                     help="authenticate with this client certificate (PEM), e.g. an entitlement "
-                          "certificate in /etc/pki/entitlement/ for the RHEL CDN")
-    tls.add_argument("--client-key", metavar="FILE",
-                     help="private key for --client-cert (PEM, not encrypted), if it isn't "
-                          "in the --client-cert file")
-    tls.add_argument("-k", "--insecure", action="store_true",
-                     help="don't verify the server certificate (like sslverify=0)")
-    tls.add_argument("--no-strict-x509", action="store_true",
-                     help="accept server certificates that verify but don't follow RFC 5280 "
-                          "strictly, e.g. from a home-made CA (Python 3.13+ is strict by default)")
+    # The first two paragraphs of the docstring, for -h
+    short_description = "\n\n".join(__doc__.strip().split("\n\n")[:2])
+    ap = argparse.ArgumentParser(description=short_description, add_help=False,
+                                 epilog="Use --help for the full help, or see rrcc(1).",
+                                 formatter_class=HelpFormatter)
+    # Python < 3.10 calls them "optional arguments"
+    ap._optionals.title = "options"
+
+    def add(group, *flags, long_help=None, **kwargs):
+        """Add an option with help for -h, and optionally a longer one for --help."""
+        action = group.add_argument(*flags, **kwargs)
+        if long_help:
+            action.long_help = long_help
+        return action
+
+    add(ap, "paths", nargs="+", metavar="path",
+        help="repo root(s), or (with --top-level) parent directories of multiple repos; "
+             "a directory or an http(s):// URL",
+        long_help="the root of a repo, i.e. the directory or http(s):// URL that contains "
+                  "\"repodata/\", or with --top-level a parent directory of several repos")
+    ap.add_argument("-h", action="help", help="show this short help and exit")
+    ap.add_argument("--help", action=FullHelpAction, help="show the full help and exit")
+    add(ap, "--top-level", action="store_true",
+        help="treat each 'path' as a parent dir; auto-discover repos under it",
+        long_help="treat the path as a parent directory containing multiple repos; "
+                  "auto-discover and check each one")
+    add(ap, "--checksum", action="store_true", help="also verify checksums (slow)",
+        long_help="verify checksums too (slow: reads every RPM); without this flag, only "
+                  "presence and size are checked. For a remote repo this also verifies the "
+                  "checksum of every metadata file, which downloads all of them.")
+    add(ap, "--extra", action="store_true", help="report on-disk RPMs not in metadata",
+        long_help="also report *.rpm files on disk that are NOT referenced by primary.xml "
+                  "(orphans / stale files). For a URL this needs directory listings enabled "
+                  "on the web server.")
+    add(ap, "--max-age", type=positive_float, metavar="DAYS",
+        help="report a repo whose repomd.xml is older than DAYS days (a fraction works too)",
+        long_help="report a repo whose repomd.xml is older than DAYS days (a fraction like "
+                  "0.5 works too), going by the newest <timestamp> in it. Catches a mirror "
+                  "that is consistent but no longer being synced.")
+    add(ap, "-n", "--newest-only", action="store_true",
+        help="only check the latest version of each package (like dnf reposync --newest-only)",
+        long_help="only check the latest version of each package (per name and architecture) "
+                  "listed in primary.xml, and skip the older ones. Same as 'dnf reposync "
+                  "--newest-only', so use it to check a mirror made that way. Modular repos "
+                  "are handled like dnf 4 does it (the module metadata in modules.yaml is read).")
+    add(ap, "--ignore-modules", action="store_true",
+        help="with --newest-only: ignore module metadata, like dnf 5's reposync does",
+        long_help="with --newest-only, ignore the module metadata and just keep the latest "
+                  "version of each package, like dnf 5 (Fedora 41+) does. Use it for a mirror "
+                  "of a modular repo made with dnf 5's reposync.")
+    add(ap, "-j", "--jobs", type=positive_int, default=DEFAULT_JOBS, metavar="N",
+        help=f"number of packages to check in parallel for http(s):// repos "
+             f"(default: {DEFAULT_JOBS}; 1 disables parallelism); ignored for directories",
+        long_help=f"check N packages in parallel for a remote repo (default: {DEFAULT_JOBS}; "
+                  f"1 disables parallelism). Each worker keeps its own connection to the "
+                  f"server alive, so this is also how many connections are used. Ignored for "
+                  f"directories.")
     output = ap.add_mutually_exclusive_group()
-    output.add_argument("-q", "--quiet", action="store_true",
-                        help="print only repos with problems, and nothing if all are consistent")
-    output.add_argument("-v", "--verbose", action="store_true",
-                        help="print a line for every package checked")
-    ap.add_argument("--no-progress", action="store_true",
-                    help="don't show the progress line that is shown when stderr is a terminal")
-    ap.add_argument("--version", action="version", version=f"rrcc {__version__}",
-                    help="print the version and exit")
+    add(output, "-q", "--quiet", action="store_true",
+        help="print only repos with problems, and nothing if all are consistent",
+        long_help="print only the repos that have problems, and nothing at all if every repo "
+                  "is consistent (for cron)")
+    add(output, "-v", "--verbose", action="store_true",
+        help="print a line for every package checked")
+    add(ap, "--no-progress", action="store_true",
+        help="don't show the progress line that is shown when stderr is a terminal",
+        long_help="don't show a progress line. By default it is shown on stderr when that is "
+                  "a terminal (not with -q or -v), once a repo takes more than half a second.")
+    add(ap, "--version", action="version", version=f"rrcc {__version__}",
+        help="print the version and exit")
+    tls = ap.add_argument_group("TLS options for https:// repos",
+                                "Like sslcacert, sslclientcert, sslclientkey and sslverify in dnf.")
+    add(tls, "--ca-cert", metavar="FILE",
+        help="trust only the CA certificate(s) in this PEM file, or in this directory "
+             "(hashed as by openssl rehash), instead of the system CAs",
+        long_help="trust only the CA certificate(s) in this PEM file, or in this directory "
+                  "(hashed by 'openssl rehash'), instead of the system CAs. For the RHEL CDN: "
+                  "/etc/rhsm/ca/redhat-uep.pem")
+    add(tls, "--client-cert", metavar="FILE",
+        help="authenticate with this client certificate (PEM), e.g. an entitlement "
+             "certificate in /etc/pki/entitlement/ for the RHEL CDN",
+        long_help="authenticate with this client certificate (PEM). For the RHEL CDN: "
+                  "/etc/pki/entitlement/<serial>.pem")
+    add(tls, "--client-key", metavar="FILE",
+        help="private key for --client-cert (PEM, not encrypted), if it isn't "
+             "in the --client-cert file",
+        long_help="private key for --client-cert, unless it is in the same file. Encrypted "
+                  "keys are not supported. For the RHEL CDN: "
+                  "/etc/pki/entitlement/<serial>-key.pem")
+    add(tls, "-k", "--insecure", action="store_true",
+        help="don't verify the server certificate (like sslverify=0)")
+    add(tls, "--no-strict-x509", action="store_true",
+        help="accept server certificates that verify but don't follow RFC 5280 "
+             "strictly, e.g. from a home-made CA (Python 3.13+ is strict by default)",
+        long_help="accept a server certificate that verifies but doesn't follow RFC 5280 "
+                  "strictly, e.g. one from a home-made CA without an Authority Key "
+                  "Identifier. Python 3.13+ rejects those by default, unlike curl and dnf.")
     args = ap.parse_args()
     if args.ignore_modules and not args.newest_only:
         ap.error("--ignore-modules needs --newest-only")
