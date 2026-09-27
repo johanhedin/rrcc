@@ -173,6 +173,7 @@ class TLSServer(StaticServer):
     def __init__(self, root, pki_dir, require_client_cert=False, **kwargs):
         super().__init__(root, **kwargs)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(os.path.join(pki_dir, "server.pem"), os.path.join(pki_dir, "server.key"))
         if require_client_cert:
             ctx.verify_mode = ssl.CERT_REQUIRED
