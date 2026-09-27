@@ -28,6 +28,8 @@ make install PREFIX=/usr DESTDIR="$stage"
 for f in usr/bin/rrcc \
          usr/share/man/man1/rrcc.1.gz \
          usr/share/bash-completion/completions/rrcc \
+         usr/share/zsh/site-functions/_rrcc \
+         usr/share/fish/vendor_completions.d/rrcc.fish \
          usr/share/doc/rrcc/README.md \
          usr/share/doc/rrcc/ChangeLog; do
     if [ ! -f "$stage/$f" ]; then

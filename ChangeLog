@@ -10,6 +10,8 @@
   package without size in primary.xml
 - Always create the TLS context in rrcc, and warn when --insecure is used
 - Fix CodeQL findings in the test suite
+- Add zsh and fish completions, installed by 'make install' next to the
+  bash completion, which has moved to completions/rrcc.bash
 
 * Sat Sep 26 2026 Johan Hedin - 1.4.0
 - Add a test suite, run with 'make test' and 'make test-all'

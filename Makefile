@@ -33,6 +33,8 @@ BINDIR      ?= $(EXEC_PREFIX)/bin
 DATAROOTDIR ?= $(PREFIX)/share
 DOCDIR      ?= $(DATAROOTDIR)/doc/$(PROGRAM)
 BASHCOMPDIR ?= $(DATAROOTDIR)/bash-completion/completions
+ZSHCOMPDIR  ?= $(DATAROOTDIR)/zsh/site-functions
+FISHCOMPDIR ?= $(DATAROOTDIR)/fish/vendor_completions.d
 MANDIR      ?= $(DATAROOTDIR)/man
 MAN1DIR     ?= $(MANDIR)/man1
 INSTALL     ?= install
@@ -46,6 +48,8 @@ MANCOMPRESS     ?= gzip -9nc
 
 DOCS := README.md ChangeLog
 BASHCOMP := completions/$(PROGRAM).bash
+ZSHCOMP  := completions/$(PROGRAM).zsh
+FISHCOMP := completions/$(PROGRAM).fish
 MAN1     := man/$(PROGRAM).1
 MAN1_IN  := $(MAN1).in
 
@@ -61,7 +65,7 @@ help:
 	@echo "  test-all   Run the test suite including the slow tests (needs dnf)"
 	@echo "  ci-local   Run the CI in podman containers (CI_IMAGES=\"fedora:44 ...\")"
 	@echo "  clean      Remove generated files"
-	@echo "  install    Install $(PROGRAM), bash completion, man page and documentation"
+	@echo "  install    Install $(PROGRAM), shell completions, man page and documentation"
 	@echo "  uninstall  Remove what 'make install' installed"
 	@echo
 	@echo "Version $(VERSION) ($(CL_DATE)), from ChangeLog"
@@ -71,6 +75,8 @@ help:
 	@echo "  BINDIR=$(BINDIR)"
 	@echo "  DOCDIR=$(DOCDIR)"
 	@echo "  BASHCOMPDIR=$(BASHCOMPDIR)"
+	@echo "  ZSHCOMPDIR=$(ZSHCOMPDIR)"
+	@echo "  FISHCOMPDIR=$(FISHCOMPDIR)"
 	@echo "  MANDIR=$(MANDIR)"
 	@echo "  DESTDIR=$(DESTDIR)"
 
@@ -101,6 +107,10 @@ install: check $(MAN1)
 	$(INSTALL_PROGRAM) $(SCRIPT) $(DESTDIR)$(BINDIR)/$(PROGRAM)
 	$(INSTALL) -d $(DESTDIR)$(BASHCOMPDIR)
 	$(INSTALL_DATA) $(BASHCOMP) $(DESTDIR)$(BASHCOMPDIR)/$(PROGRAM)
+	$(INSTALL) -d $(DESTDIR)$(ZSHCOMPDIR)
+	$(INSTALL_DATA) $(ZSHCOMP) $(DESTDIR)$(ZSHCOMPDIR)/_$(PROGRAM)
+	$(INSTALL) -d $(DESTDIR)$(FISHCOMPDIR)
+	$(INSTALL_DATA) $(FISHCOMP) $(DESTDIR)$(FISHCOMPDIR)/$(PROGRAM).fish
 	$(INSTALL) -d $(DESTDIR)$(MAN1DIR)
 	$(MANCOMPRESS) $(MAN1) > $(DESTDIR)$(MAN1DIR)/$(notdir $(MAN1)).gz
 	chmod 0644 $(DESTDIR)$(MAN1DIR)/$(notdir $(MAN1)).gz
@@ -110,6 +120,8 @@ install: check $(MAN1)
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(PROGRAM)
 	rm -f $(DESTDIR)$(BASHCOMPDIR)/$(PROGRAM)
+	rm -f $(DESTDIR)$(ZSHCOMPDIR)/_$(PROGRAM)
+	rm -f $(DESTDIR)$(FISHCOMPDIR)/$(PROGRAM).fish
 	rm -f $(DESTDIR)$(MAN1DIR)/$(notdir $(MAN1)).gz
 	for f in $(DOCS); do rm -f $(DESTDIR)$(DOCDIR)/$$f; done
 	-rmdir $(DESTDIR)$(DOCDIR)
