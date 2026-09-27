@@ -195,6 +195,21 @@ Encrypted private keys are not supported.
 .TP
 .BR \-k ", " \-\-insecure
 Do not verify the certificate of the server.
+.TP
+.B \-\-no\-strict\-x509
+Accept a server certificate that does not follow RFC 5280 strictly.
+Since Python 3.13, certificates are verified in strict mode by default, which
+rejects many certificates from home-made CAs, for example with the error
+.IR "Missing Authority Key Identifier" ,
+even though
+.BR curl (1)
+and
+.BR dnf (8)
+accept them.
+Unlike
+.BR \-\-insecure ,
+the certificate and the host name are still verified.
+With older Python versions this option changes nothing.
 .SH ENVIRONMENT
 .TP
 .BR http_proxy ", " https_proxy

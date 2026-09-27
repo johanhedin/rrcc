@@ -23,7 +23,11 @@ with `--jobs`. A proxy is used if it is set in the `http_proxy`/`https_proxy`
 environment variables, except for hosts listed in `no_proxy`. For HTTPS, the
 CA certificates and a client certificate can be given with `--ca-cert`,
 `--client-cert` and `--client-key`, for example to check the RHEL CDN with
-an entitlement certificate.
+an entitlement certificate. Python 3.13 and newer reject certificates that
+don't follow RFC 5280 strictly, which is common for a certificate from a
+home-made CA ("Missing Authority Key Identifier"), even though curl and dnf
+accept them. `--no-strict-x509` accepts such a certificate, but still verifies
+it, unlike `--insecure`.
 
 With `--newest-only` only the latest version of each package is checked,
 which is what you want for a mirror made with `dnf reposync --newest-only`.

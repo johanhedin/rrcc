@@ -14,6 +14,8 @@
   bash completion, which has moved to completions/rrcc.bash
 - Add --max-age to report repositories whose metadata is older than a
   number of days
+- Add --no-strict-x509 to accept certificates that don't follow RFC 5280
+  strictly, e.g. from a home-made CA, which Python 3.13+ rejects by default
 
 * Sat Sep 26 2026 Johan Hedin - 1.4.0
 - Add a test suite, run with 'make test' and 'make test-all'

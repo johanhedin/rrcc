@@ -15,5 +15,6 @@ _arguments -s -S \
     '--client-cert=[authenticate with this client certificate (PEM)]:client certificate:_files' \
     '--client-key=[private key for --client-cert (PEM)]:client key:_files' \
     '(-k --insecure)'{-k,--insecure}"[don't verify the server certificate]" \
+    "--no-strict-x509[accept certificates that don't follow RFC 5280 strictly]" \
     '(-v --verbose)'{-v,--verbose}'[print a line for every package checked]' \
     '*:repo root directory or URL:_files -/'

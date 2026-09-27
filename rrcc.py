@@ -78,6 +78,10 @@ sslclientcert, sslclientkey and sslverify):
                          same file. Encrypted keys are not supported. For the
                          RHEL CDN: /etc/pki/entitlement/<serial>-key.pem
     -k, --insecure       Don't verify the server certificate (sslverify=0).
+    --no-strict-x509     Accept a server certificate that verifies but doesn't
+                         follow RFC 5280 strictly, e.g. one from a home-made CA
+                         without an Authority Key Identifier. Python 3.13+
+                         rejects those by default, unlike curl and dnf.
     --version            Print the version and exit.
 
 If repomd.xml also lists a "primary_zck" entry (the zchunk-compressed copy
@@ -694,6 +698,10 @@ def make_ssl_context(args):
     if args.insecure:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
+    if args.no_strict_x509:
+        # Python 3.13+ sets this flag in create_default_context(); clearing it
+        # is a no-op on older versions. The chain and host name are still checked.
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
     if args.client_cert:
         if args.client_key and not os.path.exists(args.client_key):
             raise ValueError(f"--client-key {args.client_key}: no such file or directory")
@@ -1364,6 +1372,9 @@ def main():
                           "in the --client-cert file")
     tls.add_argument("-k", "--insecure", action="store_true",
                      help="don't verify the server certificate (like sslverify=0)")
+    tls.add_argument("--no-strict-x509", action="store_true",
+                     help="accept server certificates that verify but don't follow RFC 5280 "
+                          "strictly, e.g. from a home-made CA (Python 3.13+ is strict by default)")
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--version", action="version", version=f"rrcc {__version__}",
                     help="print the version and exit")

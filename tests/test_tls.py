@@ -1,6 +1,7 @@
 """Tests for https:// repositories and the TLS options."""
 
 import os
+import ssl
 import unittest
 
 from support import PKI, TestCase
@@ -84,6 +85,42 @@ class ClientCertTest(TestCase):
     def test_combined_file(self):
         self.assertConsistent(self.rrcc("--ca-cert", pki("ca.pem"),
                                         "--client-cert", pki("client-combined.pem"), self.url))
+
+
+def strict_by_default():
+    """True if a default context rejects a certificate without an Authority
+    Key Identifier: Python 3.13+ sets VERIFY_X509_STRICT, and only OpenSSL
+    3.0+ checks the key identifiers in strict mode."""
+    return (bool(ssl.create_default_context().verify_flags & ssl.VERIFY_X509_STRICT)
+            and ssl.OPENSSL_VERSION_INFO >= (3, 0))
+
+
+class StrictX509Test(TestCase):
+    """A server certificate without key identifiers, as from a home-made CA."""
+
+    def setUp(self):
+        super().setUp()
+        standard_repo(self.tmp)
+        server = TLSServer(self.tmp, PKI, cert="server-lax").start()
+        self.addCleanup(server.stop)
+        self.url = server.url
+
+    @unittest.skipUnless(strict_by_default(), "certificates are not verified strictly by default")
+    def test_strict_by_default(self):
+        result = self.rrcc("--ca-cert", pki("ca.pem"), self.url, rc=2)
+        self.assertIn("CERTIFICATE_VERIFY_FAILED", result.out)
+
+    def test_no_strict_x509(self):
+        self.assertConsistent(self.rrcc("--ca-cert", pki("ca.pem"), "--no-strict-x509", self.url))
+
+    def test_no_strict_x509_still_verifies(self):
+        result = self.rrcc("--ca-cert", pki("other-ca.pem"), "--no-strict-x509", self.url, rc=2)
+        self.assertIn("CERTIFICATE_VERIFY_FAILED", result.out)
+
+    def test_no_strict_x509_still_checks_host_name(self):
+        port = self.url.rsplit(":", 1)[1]
+        result = self.rrcc("--ca-cert", pki("ca.pem"), "--no-strict-x509", "https://127.0.0.1:" + port, rc=2)
+        self.assertIn("127.0.0.1", result.out)
 
 
 class TlsArgumentTest(TestCase):

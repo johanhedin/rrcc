@@ -173,12 +173,13 @@ class StaticServer(_BaseServer):
 
 class TLSServer(StaticServer):
     """StaticServer over HTTPS, with the test certificate for 'localhost'
-    from tests/support/pki/. With require_client_cert, clients must present
-    a certificate signed by the test CA."""
+    from tests/support/pki/ (or another one there, named by cert). With
+    require_client_cert, clients must present a certificate signed by the
+    test CA."""
 
     scheme = "https"
 
-    def __init__(self, root, pki_dir, require_client_cert=False, **kwargs):
+    def __init__(self, root, pki_dir, require_client_cert=False, cert="server", **kwargs):
         super().__init__(root, **kwargs)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         # minimum_version (3.7+) is the non-deprecated way to require TLS
@@ -187,7 +188,7 @@ class TLSServer(StaticServer):
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         else:
             ctx.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1
-        ctx.load_cert_chain(os.path.join(pki_dir, "server.pem"), os.path.join(pki_dir, "server.key"))
+        ctx.load_cert_chain(os.path.join(pki_dir, cert + ".pem"), os.path.join(pki_dir, cert + ".key"))
         if require_client_cert:
             ctx.verify_mode = ssl.CERT_REQUIRED
             ctx.load_verify_locations(os.path.join(pki_dir, "ca.pem"))
