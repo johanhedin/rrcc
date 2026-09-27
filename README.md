@@ -49,16 +49,6 @@ It does not verify GPG signatures of `repomd.xml` or of the packages, and it
 accepts the checksum algorithms that the metadata uses, including MD5 and
 SHA-1. Use `--insecure` only for servers that you trust in some other way.
 
-## Usage
-
-Run with `--help` to learn how to use `rrcc`:
-
-```
-rrcc --help
-```
-
-From a checkout of this repository, run `./rrcc.py --help` instead.
-
 ## Install
 
 You can install `rrcc` on your system with `make install`. By default it
@@ -71,6 +61,22 @@ PREFIX=/usr make install
 
 When installed with `make install`, the program is named just `rrcc`, without
 the `.py` extension.
+
+## Usage
+
+Run with `--help` to learn how to use `rrcc`:
+
+```
+rrcc --help
+```
+
+or use the man page:
+
+```
+man rrcc
+```
+
+(from a checkout of this repository, run `./rrcc.py --help` instead).
 
 ## Supported platforms
 
