@@ -1,4 +1,4 @@
-* Sun Sep 27 2026 Johan Hedin - 1.x.y (not yet released)
+* Sun Sep 27 2026 Johan Hedin - 1.5.1
 - Only print version when using --version and omit program name
 - Refuse a symlink, in a repository given as a directory, that resolves
   outside of it, like any other location outside of the repository; add
