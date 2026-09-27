@@ -16,6 +16,8 @@
   number of days
 - Add --no-strict-x509 to accept certificates that don't follow RFC 5280
   strictly, e.g. from a home-made CA, which Python 3.13+ rejects by default
+- Add --quiet to print only the repositories with problems, and nothing
+  when all are consistent
 
 * Sat Sep 26 2026 Johan Hedin - 1.4.0
 - Add a test suite, run with 'make test' and 'make test-all'

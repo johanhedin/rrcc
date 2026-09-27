@@ -39,6 +39,10 @@ With `--max-age DAYS` a repository whose `repomd.xml` is older than that is
 reported as a problem, which catches a mirror that is consistent but has
 stopped syncing.
 
+With `--quiet` only the repositories with problems are printed, and nothing
+at all when everything is consistent, so a cron job only sends mail when
+something is wrong.
+
 A typical use case is mirroring a remote RPM repository and wanting to
 automate checks that tell you whether the mirror is in a usable state.
 

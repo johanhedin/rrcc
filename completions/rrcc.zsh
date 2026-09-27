@@ -16,5 +16,6 @@ _arguments -s -S \
     '--client-key=[private key for --client-cert (PEM)]:client key:_files' \
     '(-k --insecure)'{-k,--insecure}"[don't verify the server certificate]" \
     "--no-strict-x509[accept certificates that don't follow RFC 5280 strictly]" \
-    '(-v --verbose)'{-v,--verbose}'[print a line for every package checked]' \
+    '(-q --quiet -v --verbose)'{-q,--quiet}'[print only repos with problems]' \
+    '(-q --quiet -v --verbose)'{-v,--verbose}'[print a line for every package checked]' \
     '*:repo root directory or URL:_files -/'

@@ -153,6 +153,15 @@ Each worker keeps its own connection to the server alive, so this is also the
 number of simultaneous connections.
 Ignored for repositories in directories.
 .TP
+.BR \-q ", " \-\-quiet
+Print only the repositories that have problems or could not be read, without
+the notes and the summary, and nothing at all if every repository is
+consistent.
+Meant for
+.BR cron (8),
+which then only sends mail when something is wrong.
+The exit status is the same as without this option.
+.TP
 .BR \-v ", " \-\-verbose
 Print a line for every package checked.
 .TP

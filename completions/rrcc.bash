@@ -5,7 +5,7 @@ _rrcc()
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
     local opts="-h --help --top-level --checksum --extra --max-age -n --newest-only --ignore-modules -j --jobs
-                --ca-cert --client-cert --client-key -k --insecure --no-strict-x509 -v --verbose --version"
+                --ca-cert --client-cert --client-key -k --insecure --no-strict-x509 -q --quiet -v --verbose --version"
 
     compopt -o filenames 2>/dev/null
     case $prev in

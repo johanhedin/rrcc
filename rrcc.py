@@ -65,6 +65,8 @@ Options:
                          keeps its own connection to the server alive, so
                          this is also how many connections are used.
                          Ignored for directories.
+    -q, --quiet          Print only the repos that have problems, and nothing
+                         at all if every repo is consistent (for cron).
     -v, --verbose        Print a line for every package checked.
 
 TLS options for https:// repos (named after the dnf repo settings sslcacert,
@@ -1375,7 +1377,11 @@ def main():
     tls.add_argument("--no-strict-x509", action="store_true",
                      help="accept server certificates that verify but don't follow RFC 5280 "
                           "strictly, e.g. from a home-made CA (Python 3.13+ is strict by default)")
-    ap.add_argument("-v", "--verbose", action="store_true")
+    output = ap.add_mutually_exclusive_group()
+    output.add_argument("-q", "--quiet", action="store_true",
+                        help="print only repos with problems, and nothing if all are consistent")
+    output.add_argument("-v", "--verbose", action="store_true",
+                        help="print a line for every package checked")
     ap.add_argument("--version", action="version", version=f"rrcc {__version__}",
                     help="print the version and exit")
     args = ap.parse_args()
@@ -1418,18 +1424,27 @@ def main():
             def rel(r):
                 return r[len(top_path):] or "." if is_url(top_path) else os.path.relpath(r, top_path)
 
-            print(f"Found {len(found)} repo(s) under {printable(top_path)}:")
+            if not args.quiet:
+                print(f"Found {len(found)} repo(s) under {printable(top_path)}:")
             for r in found:
-                print(f"  {printable(rel(r))}")
+                if not args.quiet:
+                    print(f"  {printable(rel(r))}")
                 add_repo(r if len(args.paths) > 1 else rel(r), r)
-            print()
+            if not args.quiet:
+                print()
         else:
             add_repo(top_path, top_path)
 
     for label, repo_root in repos:
-        print(f"=== {printable(label)} ===")
+        if not args.quiet:
+            print(f"=== {printable(label)} ===")
         status, count, problems, notes = check_one_repo(repo_root, args)
         total_packages += count
+        if args.quiet:
+            if status == "ok":
+                continue
+            print(f"=== {printable(label)} ===")
+            notes = []
 
         if status == "error":
             overall_error = True
@@ -1446,14 +1461,16 @@ def main():
             print(f"  {printable(note)}")
         print()
 
-    print(f"Summary: {len(repos)} repo(s), {total_packages} package(s) checked total.")
+    if not args.quiet:
+        print(f"Summary: {len(repos)} repo(s), {total_packages} package(s) checked total.")
     if overall_error:
         print("Result: one or more repos could not be read.")
         return 2
     if overall_problem:
         print("Result: inconsistencies found.")
         return 1
-    print("Result: all checked repos are consistent.")
+    if not args.quiet:
+        print("Result: all checked repos are consistent.")
     return 0
 
 

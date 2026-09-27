@@ -17,4 +17,5 @@ complete -c rrcc -l client-cert -r -F -d 'Authenticate with this client certific
 complete -c rrcc -l client-key -r -F -d 'Private key for --client-cert (PEM)'
 complete -c rrcc -s k -l insecure -d "Don't verify the server certificate"
 complete -c rrcc -l no-strict-x509 -d "Accept certificates that don't follow RFC 5280 strictly"
+complete -c rrcc -s q -l quiet -d 'Print only repos with problems'
 complete -c rrcc -s v -l verbose -d 'Print a line for every package checked'
