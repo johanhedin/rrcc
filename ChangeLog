@@ -1,3 +1,6 @@
+* Sun Sep 27 2026 Johan Hedin - 1.x.y (not yet released)
+- Only print version when using --version and omit program name
+
 * Sun Sep 27 2026 Johan Hedin - 1.5.0
 - Refuse locations in the metadata that are absolute or lead outside of the
   repository, both for directories and URLs

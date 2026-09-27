@@ -1652,7 +1652,7 @@ def main():
         help="don't show the progress line that is shown when stderr is a terminal",
         long_help="don't show a progress line. By default it is shown on stderr when that is "
                   "a terminal (not with -q or -v), once a repo takes more than half a second.")
-    add(ap, "--version", action="version", version=f"rrcc {__version__}",
+    add(ap, "--version", action="version", version=f"{__version__}",
         help="print the version and exit")
     tls = ap.add_argument_group("TLS options for https:// repos",
                                 "Like sslcacert, sslclientcert, sslclientkey and sslverify in dnf.")
