@@ -225,11 +225,12 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
         if not self._authorized():
             return
         target = urlsplit(self.path)
-        if target.hostname not in _LOOPBACK_HOSTS:
+        host = target.hostname
+        if host not in _LOOPBACK_HOSTS:
             self.send_error(403, "Only loopback targets are allowed")
             return
         self.owner.bump(self.command)
-        conn = http.client.HTTPConnection(target.hostname, target.port or 80, timeout=30)
+        conn = http.client.HTTPConnection(host, target.port or 80, timeout=30)
         try:
             conn.request(self.command, (target.path or "/") + ("?" + target.query if target.query else ""))
             resp = conn.getresponse()
