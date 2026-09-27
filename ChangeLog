@@ -1,5 +1,20 @@
 * Sun Sep 27 2026 Johan Hedin - 1.x.y (not yet released)
 - Only print version when using --version and omit program name
+- Refuse a symlink, in a repository given as a directory, that resolves
+  outside of it, like any other location outside of the repository; add
+  --allow-symlinks-outside for a mirror that symlinks packages in on purpose
+- Refuse a <!DOCTYPE in metadata XML, which RPM metadata never has, closing
+  off entity expansion ("billion laughs") on older Python/expat versions
+- Bound directory listing pages and the bodies drained from a redirect or
+  error response, and cap the number of directories a listing can follow,
+  so a hostile server can't exhaust memory or hang rrcc
+- Don't send --client-cert to a host reached through a redirect, only to
+  the host given on the command line
+- Treat more failures while reading a repository (a malformed HTTP
+  response, a truncated body) as a problem with that repo instead of
+  crashing rrcc, so the other repositories are still checked
+- Escape Unicode bidi and format characters in names from the repository,
+  like control characters are already escaped
 
 * Sun Sep 27 2026 Johan Hedin - 1.5.0
 - Refuse locations in the metadata that are absolute or lead outside of the

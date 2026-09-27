@@ -9,7 +9,7 @@ import unittest
 
 from support import PKI, TestCase, load_rrcc
 from support.repo import RepoBuilder, standard_repo
-from support.servers import StaticServer, TLSServer
+from support.servers import GarbageServer, StaticServer, TLSServer
 
 
 class CheckHrefTest(unittest.TestCase):
@@ -247,6 +247,172 @@ class InsecureTest(TestCase):
         result = self.rrcc("-k", self.tmp, rc=0)
         self.assertIn("WARNING: --insecure", result.err)
         self.assertNotIn("--insecure", self.rrcc(self.tmp, rc=0).err)
+
+
+class SymlinkTest(TestCase):
+    def test_package_symlink_outside_repo_is_refused(self):
+        repo = RepoBuilder(self.path("repo"))
+        repo.add("ok")
+        pkg = repo.add("evil", write=False)
+        repo.build()
+        with open(self.path("secret"), "wb") as f:
+            f.write(pkg["content"])  # matches what the metadata expects
+        link = self.path("repo", pkg["href"])
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        os.symlink(self.path("secret"), link)
+
+        result = self.rrcc("--checksum", self.path("repo"), rc=1)
+        self.assertProblem(result, f"UNREADABLE: {pkg['href']}: UnsafeHrefError: "
+                                   "refusing location that resolves outside of the repository")
+        # the symlink is refused before it is ever opened, so nothing about
+        # the target (its size, or that its checksum matches) is reported
+        self.assertNotIn(str(len(pkg["content"])), result.out)
+
+        # --allow-symlinks-outside opts back in, for a mirror that symlinks
+        # packages in from a shared pool on purpose
+        self.assertConsistent(self.rrcc("--allow-symlinks-outside", "--checksum", self.path("repo")))
+
+    def test_symlink_inside_repo_is_fine(self):
+        repo = RepoBuilder(self.path("repo"))
+        pkg = repo.add("ok")
+        repo.build()
+        real = self.path("repo", "real-ok.rpm")
+        os.rename(self.path("repo", pkg["href"]), real)
+        os.symlink(real, self.path("repo", pkg["href"]))
+        self.assertConsistent(self.rrcc("--checksum", self.path("repo")))
+
+    def test_top_level_symlinked_repo_dir(self):
+        standard_repo(self.path("real", "repo"))
+        os.makedirs(self.path("pub"))
+        os.symlink(self.path("real"), self.path("pub", "link"))
+
+        result = self.rrcc("--top-level", self.path("pub"), rc=2)
+        self.assertIn("no repos found under", result.err)
+
+        result = self.rrcc("--top-level", "--allow-symlinks-outside", self.path("pub"), rc=0)
+        self.assertIn("Found 1 repo(s) under", result.out)
+
+
+class DoctypeTest(TestCase):
+    def test_repomd_doctype_is_refused(self):
+        repo = RepoBuilder(self.tmp)
+        repo.add("ok")
+        repo.build()
+        repo.edit_repomd('<repomd xmlns="http://linux.duke.edu/metadata/repo"',
+                         '<!DOCTYPE repomd [<!ENTITY x "y">]>\n'
+                         '<repomd xmlns="http://linux.duke.edu/metadata/repo"')
+        result = self.rrcc(self.tmp, rc=2)
+        self.assertIn("DOCTYPE", result.out)
+
+    def test_primary_doctype_is_refused(self):
+        rrcc = load_rrcc()
+        xml = (b'<?xml version="1.0"?>\n'
+               b'<!DOCTYPE metadata [<!ENTITY x "y">]>\n'
+               b'<metadata xmlns="http://linux.duke.edu/metadata/common" packages="0">'
+               b'</metadata>\n')
+        with tempfile.NamedTemporaryFile(suffix=".xml") as f:
+            f.write(xml)
+            f.flush()
+            with self.assertRaisesRegex(ValueError, "DOCTYPE"):
+                list(rrcc.iter_packages(f.name))
+
+
+class ListingLimitsTest(TestCase):
+    """These call the internal functions directly (rather than running rrcc
+    as a subprocess, like self.rrcc() does), so that the size/count limits
+    can be lowered just for the test."""
+
+    def test_listing_larger_than_limit_is_refused(self):
+        standard_repo(self.tmp)
+        server = StaticServer(self.tmp).start()
+        self.addCleanup(server.stop)
+        rrcc = load_rrcc()
+        client = rrcc.HttpClient()
+        self.addCleanup(client.close)
+        old = rrcc.MAX_LISTING_SIZE
+        rrcc.MAX_LISTING_SIZE = 10
+        try:
+            with self.assertRaisesRegex(OSError, "larger than 10 bytes"):
+                rrcc.list_http_dir(client, server.url)
+        finally:
+            rrcc.MAX_LISTING_SIZE = old
+
+    def test_too_many_directories(self):
+        standard_repo(self.path("pub", "repo"))
+        for i in range(5):
+            os.makedirs(self.path("pub", f"d{i}"))
+        server = StaticServer(self.tmp).start()
+        self.addCleanup(server.stop)
+        rrcc = load_rrcc()
+        old = rrcc.MAX_LISTED_DIRS
+        rrcc.MAX_LISTED_DIRS = 3
+        try:
+            with self.assertRaisesRegex(OSError, "more than 3 directories"):
+                rrcc.find_http_repos(server.url + "pub/")
+        finally:
+            rrcc.MAX_LISTED_DIRS = old
+
+
+class MalformedResponseTest(TestCase):
+    def test_bad_status_line_does_not_crash(self):
+        server = GarbageServer().start()
+        self.addCleanup(server.stop)
+        result = self.rrcc(server.url, rc=2)
+        self.assertNotIn("Traceback", result.err)
+        self.assertIn("ERROR: ", result.out)
+        self.assertIn("BadStatusLine", result.out)
+
+    def test_top_level_reports_instead_of_crashing(self):
+        server = GarbageServer().start()
+        self.addCleanup(server.stop)
+        result = self.rrcc("--top-level", server.url, rc=2)
+        self.assertNotIn("Traceback", result.err)
+        self.assertIn("cannot search", result.err)
+        self.assertIn("BadStatusLine", result.err)
+
+
+class ClientCertRedirectTest(TestCase):
+    """A --client-cert must only be sent to the host the user named, not to
+    a host reached through a redirect (see HttpClient._context_for)."""
+
+    def rrcc_with_cert(self, *args, **kwargs):
+        return self.rrcc("--ca-cert", os.path.join(PKI, "ca.pem"),
+                         "--client-cert", os.path.join(PKI, "client.pem"),
+                         "--client-key", os.path.join(PKI, "client.key"), *args, **kwargs)
+
+    def test_client_cert_not_sent_to_redirect_target(self):
+        standard_repo(self.tmp)
+        target = TLSServer(self.tmp, PKI, require_client_cert=True).start()
+        self.addCleanup(target.stop)
+        front = TLSServer(self.tmp, PKI, redirect_prefix="/old/", redirect_target=target.url).start()
+        self.addCleanup(front.stop)
+
+        result = self.rrcc_with_cert(front.url + "old/", rc=2)
+        # Like ClientCertTest.test_required in test_tls.py: with no client
+        # certificate presented, the target's TLS 1.3 handshake fails after
+        # the fact, seen as either the alert or a reset connection.
+        self.assertRegex(result.out, r"ERROR: (SSLError|ConnectionResetError)")
+
+    def test_client_cert_is_sent_to_the_same_host(self):
+        # control case: the redirect target does require the certificate,
+        # but is the very host rrcc was pointed at (different path, not
+        # different host), so it must still be sent.
+        standard_repo(self.path("repo"))
+        server = TLSServer(self.path("repo"), PKI, require_client_cert=True,
+                           redirect_prefix="/old/", redirect_target=None).start()
+        self.addCleanup(server.stop)
+        self.assertConsistent(self.rrcc_with_cert("--checksum", server.url + "old/"))
+
+
+class BidiTest(TestCase):
+    def test_bidi_override_is_escaped(self):
+        bidi_override = chr(0x202e)  # RIGHT-TO-LEFT OVERRIDE
+        repo = RepoBuilder(self.tmp)
+        repo.add("evil", href=f"Packages/x{bidi_override}evil.rpm")
+        repo.build()
+        result = self.rrcc("-v", self.tmp, rc=0)
+        self.assertNotIn(bidi_override, result.out)
+        self.assertIn("Packages/x\\x202eevil.rpm", result.out)
 
 
 if __name__ == "__main__":

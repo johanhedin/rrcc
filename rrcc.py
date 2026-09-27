@@ -203,10 +203,14 @@ HTTP_TIMEOUT = 60  # seconds
 DEFAULT_JOBS = 8   # parallel package checks for remote repos
 
 # The repository is untrusted input, so what is read from it is bounded.
-MAX_REPOMD_SIZE = 16 * 1024**2      # repomd.xml
-MAX_METADATA_SIZE = 4 * 1024**3     # a metadata file that repomd.xml gives no size for
-MAX_MODULES_SIZE = 1024**3          # modules.yaml, decompressed
-MAX_LISTING_DEPTH = 32              # directory levels followed in a web server's listings
+MAX_REPOMD_SIZE = 16 * 1024**2       # repomd.xml
+MAX_METADATA_SIZE = 4 * 1024**3      # a metadata file that repomd.xml gives no size for
+MAX_MODULES_SIZE = 256 * 1024**2     # modules.yaml, decompressed
+MAX_LISTING_DEPTH = 32               # directory levels followed in a web server's listings
+MAX_LISTED_DIRS = 100_000            # total directories followed in a web server's listings
+MAX_LISTING_SIZE = 16 * 1024**2      # a single directory listing page
+DRAIN_LIMIT = 1024**2                # a redirect/error response body that is read to reuse the connection
+PROLOG_PEEK = 64 * 1024              # read upfront to look for a <!DOCTYPE before parsing untrusted XML
 
 
 def positive_int(value):
@@ -280,13 +284,20 @@ def check_href(href):
     return href
 
 
-_CONTROL_CHARS = re.compile("[\x00-\x1f\x7f-\x9f]")
+_CONTROL_CHARS = re.compile(
+    "[\x00-\x1f\x7f-\x9f"        # C0 and C1 control characters
+    "\u200b-\u200f"              # zero-width space/joiners and directional marks
+    "\u202a-\u202e"              # bidi embedding/override
+    "\u2060-\u2069"              # word joiner and bidi isolates
+    "\ufeff]")                   # BOM / zero-width no-break space
 
 
 def printable(text):
-    """text with control characters (newlines, escape sequences, ...) made
-    visible, so that names from the metadata or the server can't fake lines
-    of the report or drive the terminal."""
+    """text with control and Unicode bidi/format characters (newlines,
+    escape sequences, characters that reorder or hide following text, ...)
+    made visible, so that names from the metadata or the server can't fake
+    lines of the report, drive the terminal, or make part of a name display
+    misleadingly."""
     return _CONTROL_CHARS.sub(lambda m: "\\x%02x" % ord(m.group()), str(text))
 
 
@@ -309,6 +320,37 @@ def copy_limited(src, dst, limit):
         dst.write(chunk)
         copied += len(chunk)
     return copied
+
+
+def discard_limited(src, limit):
+    """Read and discard at most limit + 1 bytes from src, returning how many
+    were read (so the caller can tell whether more than limit was there)."""
+    remaining = limit + 1
+    total = 0
+    while remaining > 0:
+        chunk = src.read(min(1024 * 1024, remaining))
+        if not chunk:
+            break
+        total += len(chunk)
+        remaining -= len(chunk)
+    return total
+
+
+def read_limited(src, limit):
+    """The whole body of src, raising OSError if it is more than limit bytes.
+    Used for things read fully into memory (a directory listing page), so
+    that a hostile server can't exhaust memory by sending an oversized one."""
+    chunks = []
+    total = 0
+    while total <= limit:
+        chunk = src.read(min(1024 * 1024, limit + 1 - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    if total > limit:
+        raise OSError(f"response is larger than {limit} bytes")
+    return b"".join(chunks)
 
 
 def format_size(n):
@@ -558,16 +600,29 @@ class LocalRepo:
     checker needs from a repo, and are mirrored by HttpRepo. hrefs are the
     relative paths used in the metadata."""
 
-    def __init__(self, root):
+    def __init__(self, root, allow_symlinks_outside=False):
         self.root = root
+        self.allow_symlinks_outside = allow_symlinks_outside
+        self._real_root = os.path.realpath(root)
 
     def close(self):
         pass
 
     def locate(self, href):
         """Where href lives, for use in messages. Raises UnsafeHrefError
-        for an href that is not inside the repository."""
-        return os.path.join(self.root, check_href(href))
+        for an href that is not inside the repository, lexically (check_href)
+        or, unless allow_symlinks_outside, because a symlink resolves
+        outside of it: a mirror is untrusted input too, and a package or
+        metadata file that is really a symlink to, say, /etc/shadow must not
+        be opened, hashed (an oracle for its contents) or have its size
+        reported (which would leak that size)."""
+        path = os.path.join(self.root, check_href(href))
+        if not self.allow_symlinks_outside:
+            real = os.path.realpath(path)
+            if real != self._real_root and not real.startswith(self._real_root + os.sep):
+                raise UnsafeHrefError(
+                    f"refusing location that resolves outside of the repository: {href!r}")
+        return path
 
     def metadata_path(self, href, max_size=None):
         """Path of a local file with the contents of href, or None if the
@@ -593,7 +648,7 @@ class LocalRepo:
     def iter_rpms(self):
         """Yield the normalized href of every *.rpm below the repo root,
         except those under repodata/."""
-        for dirpath, _, filenames in os.walk(self.root):
+        for dirpath, _, filenames in os.walk(self.root, followlinks=self.allow_symlinks_outside):
             if os.sep + "repodata" in dirpath + os.sep:
                 continue
             for fn in filenames:
@@ -622,12 +677,25 @@ class HttpClient:
 
     MAX_REDIRECTS = 5
 
-    def __init__(self, ssl_context=None):
+    def __init__(self, ssl_context=None, ssl_context_bare=None, home_netloc=None):
+        """ssl_context is used for home_netloc (the host rrcc was pointed
+        at); any other host, reached via a redirect, gets ssl_context_bare
+        instead (or ssl_context, if no bare one is given). This keeps a
+        --client-cert from being handed to a host the user didn't name,
+        which could otherwise read it off a redirect (it can identify the
+        holder, e.g. list their RHEL subscriptions)."""
         self._ssl_context = ssl_context  # None: the defaults of http.client
+        self._ssl_context_bare = ssl_context_bare
+        self._home_netloc = home_netloc
         self._local = threading.local()
         self._all = []  # every connection ever opened, so close() can reach them
         self._lock = threading.Lock()
         self._proxies = urllib.request.getproxies()
+
+    def _context_for(self, netloc):
+        if self._ssl_context_bare is None or netloc == self._home_netloc:
+            return self._ssl_context
+        return self._ssl_context_bare
 
     def _proxy_for(self, scheme, netloc):
         """Return (proxy host:port, extra headers) for a server, or None
@@ -664,7 +732,7 @@ class HttpClient:
         entry = conns.get((scheme, netloc))
         if entry is None:
             if scheme == "https":
-                cls = functools.partial(http.client.HTTPSConnection, context=self._ssl_context)
+                cls = functools.partial(http.client.HTTPSConnection, context=self._context_for(netloc))
             else:
                 cls = http.client.HTTPConnection
             proxy = self._proxy_for(scheme, netloc)
@@ -709,7 +777,11 @@ class HttpClient:
                         raise
             if resp.status in (301, 302, 303, 307, 308) and resp.getheader("Location"):
                 target_url = urljoin(url, resp.getheader("Location"))
-                resp.read()  # drain, so the connection can be reused
+                # Drain to reuse the connection, but a hostile server
+                # shouldn't be able to make this read an unbounded body:
+                # close the connection instead, past DRAIN_LIMIT.
+                if discard_limited(resp, DRAIN_LIMIT) > DRAIN_LIMIT:
+                    conn.close()
                 new_scheme = urlsplit(target_url).scheme
                 if new_scheme not in ("http", "https") or (parts.scheme == "https" and new_scheme != "https"):
                     raise HttpStatusError(resp.status, f"refusing redirect to {target_url}", url)
@@ -721,7 +793,8 @@ class HttpClient:
 
         try:
             if resp.status >= 300:
-                resp.read()
+                if discard_limited(resp, DRAIN_LIMIT) > DRAIN_LIMIT:
+                    conn.close()
                 raise HttpStatusError(resp.status, resp.reason, url)
             if method == "HEAD":
                 resp.read()  # no body, but http.client only frees the connection after a read
@@ -738,9 +811,9 @@ class HttpRepo:
     hashing a streamed GET. Safe to use from several threads, except for
     metadata_path()."""
 
-    def __init__(self, url, ssl_context=None):
+    def __init__(self, url, ssl_context=None, ssl_context_bare=None):
         self.root = normalize_url(url)
-        self.client = HttpClient(ssl_context)
+        self.client = HttpClient(ssl_context, ssl_context_bare, urlsplit(self.root).netloc)
         self._pool = None
         self._tmpdir = None
         self._downloads = {}  # href -> local path (None if missing on the server)
@@ -792,9 +865,12 @@ class HttpRepo:
     def package_size(self, href, max_size=None):
         """Size of href, or None if the server doesn't have it. If the
         server sends no Content-Length, the body is counted, but no further
-        than max_size + 1 bytes (when max_size is given)."""
+        than max_size + 1 bytes (max_size defaults to MAX_METADATA_SIZE, so
+        that this is always bounded even for a file the metadata gives no
+        size for)."""
         if self.has_local_copy(href):
             return os.path.getsize(self._downloads[href])
+        limit = MAX_METADATA_SIZE if max_size is None else max_size
         try:
             with self.client.open(self.locate(href), "HEAD") as resp:
                 length = resp.getheader("Content-Length")
@@ -802,15 +878,14 @@ class HttpRepo:
                 return int(length)
             # No Content-Length (e.g. chunked): count the bytes instead
             with self.client.open(self.locate(href)) as resp:
-                remaining = None if max_size is None else max_size + 1
+                remaining = limit + 1
                 total = 0
-                while remaining is None or remaining > 0:
-                    chunk = resp.read(1024 * 1024 if remaining is None else min(1024 * 1024, remaining))
+                while remaining > 0:
+                    chunk = resp.read(min(1024 * 1024, remaining))
                     if not chunk:
                         break
                     total += len(chunk)
-                    if remaining is not None:
-                        remaining -= len(chunk)
+                    remaining -= len(chunk)
                 return total
         except HttpStatusError as e:
             if e.code == 404:
@@ -821,8 +896,9 @@ class HttpRepo:
         if self.has_local_copy(href):
             with open(self._downloads[href], "rb") as f:
                 return verify_checksum(f, algo_name, expected_hex, max_size, on_read)
+        limit = MAX_METADATA_SIZE if max_size is None else max_size
         with self.client.open(self.locate(href)) as resp:
-            return verify_checksum(resp, algo_name, expected_hex, max_size, on_read)
+            return verify_checksum(resp, algo_name, expected_hex, limit, on_read)
 
     def iter_rpms(self):
         for url in walk_http(self.client, self.root, skip_repodata=True):
@@ -847,7 +923,7 @@ def list_http_dir(client, url):
     directory listing at url. Sort links, the parent directory and anything
     outside of url are ignored."""
     with client.open(url) as resp:
-        html = resp.read().decode("utf-8", errors="replace")
+        html = read_limited(resp, MAX_LISTING_SIZE).decode("utf-8", errors="replace")
     parser = _LinkParser()
     parser.feed(html)
     dirs, files = [], []
@@ -863,9 +939,11 @@ def list_http_dir(client, url):
 
 def walk_http(client, top, skip_repodata=False):
     """Yield the URL of every file below the directory URL top, by following
-    the web server's directory listings. Each directory is listed once, and
+    the web server's directory listings. Each directory is listed once,
     directories nested deeper than MAX_LISTING_DEPTH (a symlink loop on the
-    server, say) raise OSError."""
+    server, say) raise OSError, and so does a tree with more than
+    MAX_LISTED_DIRS directories (a loop that stays within the depth limit,
+    e.g. by cycling through a handful of directories)."""
     todo = [(top, 0)]
     seen = {top}
     while todo:
@@ -880,20 +958,30 @@ def walk_http(client, top, skip_repodata=False):
             if depth >= MAX_LISTING_DEPTH:
                 raise OSError(f"directories nested more than {MAX_LISTING_DEPTH} levels deep "
                               f"below {top} (a loop?): {d}")
+            if len(seen) >= MAX_LISTED_DIRS:
+                raise OSError(f"more than {MAX_LISTED_DIRS} directories below {top} (a loop?): {d}")
             seen.add(d)
             todo.append((d, depth + 1))
 
 
-def open_repo(root, ssl_context=None):
-    return HttpRepo(root, ssl_context) if is_url(root) else LocalRepo(root)
+def open_repo(root, ssl_context=None, ssl_context_bare=None, allow_symlinks_outside=False):
+    if is_url(root):
+        return HttpRepo(root, ssl_context, ssl_context_bare)
+    return LocalRepo(root, allow_symlinks_outside)
 
 
-def make_ssl_context(args):
+def make_ssl_context(args, with_client_cert=True):
     """Build the TLS settings for https:// repos from the command line: by
     default the system CAs and no client certificate. The context is always
     made here, so that verification of the server does not depend on how the
     platform's Python is configured (as on RHEL 8, where a system file can
-    turn it off). Raises ValueError with a message for unusable files."""
+    turn it off). Raises ValueError with a message for unusable files.
+
+    with_client_cert=False builds the same context but without loading
+    --client-cert: used for any host other than the one the user pointed
+    rrcc at (see HttpClient), so that a redirect can't make a client
+    certificate, which can identify its holder, be sent to a host the user
+    didn't name."""
     if args.client_key and not args.client_cert:
         raise ValueError("--client-key needs --client-cert")
 
@@ -923,7 +1011,7 @@ def make_ssl_context(args):
         # Python 3.13+ sets this flag in create_default_context(); clearing it
         # is a no-op on older versions. The chain and host name are still checked.
         ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
-    if args.client_cert:
+    if with_client_cert and args.client_cert:
         if args.client_key and not os.path.exists(args.client_key):
             raise ValueError(f"--client-key {args.client_key}: no such file or directory")
         try:
@@ -942,6 +1030,46 @@ def make_ssl_context(args):
     return ctx
 
 
+class _NoDoctypeReader:
+    """Wraps a binary file object opened on untrusted XML: read() raises
+    ValueError if a "<!DOCTYPE" appears in the first PROLOG_PEEK bytes (a
+    DOCTYPE, if present at all, always precedes the root element). RPM
+    metadata never has one, and rejecting it blocks internal-entity expansion
+    ("billion laughs") on Python/expat versions old enough to lack expat's
+    own amplification limit (added in expat 2.4.0), without depending on
+    ElementTree/expat internals that differ between Python's C accelerator
+    and its pure-Python fallback. Used through parse_xml()/iterparse_xml(),
+    which pass an explicit XMLParser so that ElementTree always reads this
+    wrapper in chunks, instead of an accelerator reading the raw file
+    directly as an optimization."""
+
+    def __init__(self, fh):
+        self._fh = fh
+        self._buf = fh.read(PROLOG_PEEK)
+        if b"<!DOCTYPE" in self._buf:
+            raise ValueError("refusing metadata with a <!DOCTYPE declaration")
+
+    def read(self, size=-1):
+        if size is None or size < 0:
+            data, self._buf = self._buf + self._fh.read(), b""
+            return data
+        if len(self._buf) >= size:
+            data, self._buf = self._buf[:size], self._buf[size:]
+            return data
+        data, self._buf = self._buf + self._fh.read(size - len(self._buf)), b""
+        return data
+
+
+def parse_xml(fh):
+    """Like ET.parse(fh), refusing a <!DOCTYPE (see _NoDoctypeReader)."""
+    return ET.parse(_NoDoctypeReader(fh), parser=ET.XMLParser())
+
+
+def iterparse_xml(fh, events):
+    """Like ET.iterparse(fh, events=events), refusing a <!DOCTYPE."""
+    return ET.iterparse(_NoDoctypeReader(fh), events=events, parser=ET.XMLParser())
+
+
 def read_repomd(repo):
     """Return the <data> entries of repomd.xml as dicts {type, href, size,
     checksum_type, checksum, timestamp}, with the same keys as
@@ -952,8 +1080,10 @@ def read_repomd(repo):
     if repomd_path is None:
         raise RuntimeError(f"missing {repo.locate('repodata/repomd.xml')}")
 
+    with open(repomd_path, "rb") as fh:
+        root = parse_xml(fh).getroot()
     entries = []
-    for data_el in ET.parse(repomd_path).getroot().findall(f"{NS_REPO}data"):
+    for data_el in root.findall(f"{NS_REPO}data"):
         data_type = data_el.get("type")
         loc = data_el.find(f"{NS_REPO}location")
         if loc is None or "href" not in loc.attrib:
@@ -996,7 +1126,7 @@ def iter_packages(primary_path):
     """Yield dicts: {href, size, checksum_type, checksum, name, arch,
     epoch, version, release}"""
     with open_maybe_compressed(primary_path) as fh:
-        for event, elem in ET.iterparse(fh, events=("end",)):
+        for event, elem in iterparse_xml(fh, events=("end",)):
             if elem.tag != f"{NS_COMMON}package":
                 continue
             loc = elem.find(f"{NS_COMMON}location")
@@ -1264,7 +1394,7 @@ def verify_checksum(f, algo_name, expected_hex, max_size=None, on_read=None):
     return h.hexdigest() == expected_hex
 
 
-def find_http_repos(top_url, ssl_context=None):
+def find_http_repos(top_url, ssl_context=None, ssl_context_bare=None):
     """Like find_repos(), but for a directory URL: follows the web server's
     directory listings and returns the URLs (with trailing slash) of the
     repos found."""
@@ -1272,7 +1402,7 @@ def find_http_repos(top_url, ssl_context=None):
     top_url = normalize_url(top_url)
     todo = [(top_url, 0)]
     seen = {top_url}
-    client = HttpClient(ssl_context)
+    client = HttpClient(ssl_context, ssl_context_bare, urlsplit(top_url).netloc)
     try:
         while todo:
             url, depth = todo.pop()
@@ -1291,6 +1421,8 @@ def find_http_repos(top_url, ssl_context=None):
                 if depth >= MAX_LISTING_DEPTH:
                     raise OSError(f"directories nested more than {MAX_LISTING_DEPTH} levels deep "
                                   f"below {top_url} (a loop?): {d}")
+                if len(seen) >= MAX_LISTED_DIRS:
+                    raise OSError(f"more than {MAX_LISTED_DIRS} directories below {top_url} (a loop?): {d}")
                 seen.add(d)
                 todo.append((d, depth + 1))
     finally:
@@ -1298,13 +1430,16 @@ def find_http_repos(top_url, ssl_context=None):
     return sorted(repos)
 
 
-def find_repos(top_level, ssl_context=None):
+def find_repos(top_level, ssl_context=None, ssl_context_bare=None, allow_symlinks_outside=False):
     """Recursively find directories under top_level that contain a valid
-    repodata/repomd.xml. Does not descend into repodata/ itself."""
+    repodata/repomd.xml. Does not descend into repodata/ itself. By default,
+    a symlinked directory is not followed (matching LocalRepo's refusal of
+    hrefs that resolve outside of a repo); allow_symlinks_outside follows it,
+    for a parent directory that itself uses symlinks to lay out its repos."""
     if is_url(top_level):
-        return find_http_repos(top_level, ssl_context)
+        return find_http_repos(top_level, ssl_context, ssl_context_bare)
     repos = []
-    for dirpath, dirnames, _filenames in os.walk(top_level):
+    for dirpath, dirnames, _filenames in os.walk(top_level, followlinks=allow_symlinks_outside):
         if "repodata" in dirnames:
             if os.path.isfile(os.path.join(dirpath, "repodata", "repomd.xml")):
                 repos.append(dirpath)
@@ -1317,7 +1452,7 @@ def find_repos(top_level, ssl_context=None):
 # be read", as opposed to a package problem. Reported per repo so that one
 # broken repo doesn't stop the others from being checked.
 READ_ERRORS = (RuntimeError, ET.ParseError, OSError, EOFError,
-               lzma.LZMAError, zlib.error, ValueError)
+               lzma.LZMAError, zlib.error, ValueError, http.client.HTTPException)
 
 
 def check_one_repo(repo_root, args):
@@ -1326,7 +1461,7 @@ def check_one_repo(repo_root, args):
     On 'error', problems is a single-element list with the error message.
     notes is a list of informational lines about what else was checked.
     """
-    repo = open_repo(repo_root, args.ssl_context)
+    repo = open_repo(repo_root, args.ssl_context, args.ssl_context_bare, args.allow_symlinks_outside)
     try:
         return _check_one_repo(repo, args)
     except READ_ERRORS as e:
@@ -1387,7 +1522,7 @@ def check_package(repo, pkg, verify, on_read=None):
                                                   pkg["size"], on_read)
             else:
                 no_checksum = True
-    except OSError as e:
+    except (OSError, http.client.HTTPException) as e:
         return pkg, f"UNREADABLE: {href}: {type(e).__name__}: {e}", False
 
     if no_checksum:
@@ -1576,7 +1711,7 @@ def _check_one_repo(repo, args):
             for rel in repo.iter_rpms():
                 if rel not in seen_hrefs:
                     problems.append(f"ORPHAN (on disk, not in metadata): {rel}")
-        except OSError as e:
+        except (OSError, http.client.HTTPException) as e:
             problems.append(f"CANNOT LIST FILES for --extra: {type(e).__name__}: {e}")
 
     status = "problems" if problems else "ok"
@@ -1618,6 +1753,13 @@ def main():
         long_help="also report *.rpm files on disk that are NOT referenced by primary.xml "
                   "(orphans / stale files). For a URL this needs directory listings enabled "
                   "on the web server.")
+    add(ap, "--allow-symlinks-outside", action="store_true",
+        help="follow symlinks leading outside a local repo (unsafe)",
+        long_help="for a repo in a directory, follow symlinks that lead outside of it, instead "
+                  "of refusing them like any other location outside of the repo. Only use this "
+                  "for a mirror you made yourself, e.g. one that symlinks packages in from a "
+                  "shared pool: a mirror from someone else could use a symlink to make rrcc "
+                  "read (and report the size, or a checksum match, of) an arbitrary file.")
     add(ap, "--max-age", type=positive_float, metavar="DAYS",
         help="report a repo whose repomd.xml is older than DAYS days (a fraction works too)",
         long_help="report a repo whose repomd.xml is older than DAYS days (a fraction like "
@@ -1686,6 +1828,8 @@ def main():
         ap.error("--ignore-modules needs --newest-only")
     try:
         args.ssl_context = make_ssl_context(args)
+        args.ssl_context_bare = (make_ssl_context(args, with_client_cert=False)
+                                 if args.client_cert else args.ssl_context)
     except ValueError as e:
         ap.error(str(e))
     if args.insecure:
@@ -1712,8 +1856,9 @@ def main():
         if args.top_level:
             progress.start(printable(top_path), "looking for repos")
             try:
-                found = find_repos(top_path, args.ssl_context)
-            except (OSError, RuntimeError) as e:
+                found = find_repos(top_path, args.ssl_context, args.ssl_context_bare,
+                                    args.allow_symlinks_outside)
+            except (OSError, RuntimeError, http.client.HTTPException) as e:
                 print(f"ERROR: cannot search {top_path}: {type(e).__name__}: {printable(e)}", file=sys.stderr)
                 overall_error = True
                 continue

@@ -27,12 +27,19 @@ Key features:
 
 `rrcc` treats the repository, and the server it comes from, as untrusted
 input. Locations in the metadata that are absolute or lead outside of the
-repository (`../`, `//host/...`) are refused and reported as problems instead
-of being opened or requested. Redirects are followed, except from `https://`
-to `http://` and to anything other than `http(s)://`. Downloads are bounded by
-the sizes in the metadata, loops in directory listings are detected, proxy
-passwords are never printed, and names from the repository are printed with
-control characters escaped.
+repository (`../`, `//host/...`), or, for a repository in a directory, a
+symlink that resolves outside of it, are refused and reported as problems
+instead of being opened or requested (`--allow-symlinks-outside` turns this
+off, for a mirror that intentionally symlinks packages in from a shared
+pool). Redirects are followed, except from `https://` to `http://` and to
+anything other than `http(s)://`, and a `--client-cert` is only ever sent to
+the host given on the command line, not to one reached through a redirect.
+Downloads, and directory listing pages, are bounded by the sizes in the
+metadata or a fixed limit, loops and oversized trees in directory listings
+are detected, a `<!DOCTYPE` in metadata XML is refused (RPM metadata never
+has one; this blocks entity expansion attacks), proxy passwords are never
+printed, and names from the repository are printed with control and
+Unicode bidi/format characters escaped.
 
 `rrcc` checks that a repository is *consistent*, not that it is *authentic*.
 It does not verify GPG signatures of `repomd.xml` or of the packages, and it

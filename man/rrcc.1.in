@@ -95,6 +95,15 @@ files found on disk that are not referenced by
 such as orphaned or stale files.
 For a URL this requires that the web server has directory listings enabled.
 .TP
+.B \-\-allow\-symlinks\-outside
+For a repository in a directory, follow a symlink that leads outside of it,
+instead of refusing it like any other location outside of the repository.
+Only use this for a mirror made in a way you control, for example one that
+symlinks packages in from a shared pool: a mirror from someone else could
+otherwise use a symlink to make
+.B rrcc
+read, and report the size or a checksum match of, an arbitrary file.
+.TP
 .BI \-\-max\-age " DAYS"
 Report a repository whose
 .I repomd.xml
@@ -219,6 +228,8 @@ can also be a directory of CA certificates prepared with
 Authenticate to the server with the client certificate in the PEM file
 .IR FILE .
 The file can also contain the private key.
+It is only ever sent to the host given on the command line, never to a
+different host reached through a redirect.
 .TP
 .BI \-\-client\-key " FILE"
 The private key for

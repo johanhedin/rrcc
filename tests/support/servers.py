@@ -318,3 +318,45 @@ class ProxyServer(_BaseServer):
     @property
     def address(self):
         return f"127.0.0.1:{self.port}"
+
+
+class GarbageServer:
+    """Answers every connection with bytes that aren't a valid HTTP status
+    line, so that http.client raises BadStatusLine (not an OSError) on both
+    of HttpClient's connection attempts: a server bug or a stray TCP service
+    on the port, as opposed to the connection merely being refused or reset."""
+
+    def __init__(self, garbage=b"not an http response\r\n\r\n"):
+        self._garbage = garbage
+        self._sock = socket.socket()
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(5)
+        self.port = self._sock.getsockname()[1]
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        while True:
+            try:
+                conn, _ = self._sock.accept()
+            except OSError:
+                return
+            try:
+                conn.settimeout(5)
+                conn.recv(65536)
+                conn.sendall(self._garbage)
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    def stop(self):
+        self._sock.close()
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.port}/"

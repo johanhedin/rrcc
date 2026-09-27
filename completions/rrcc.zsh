@@ -8,6 +8,7 @@ _arguments -s -S \
     '--top-level[treat each path as a parent dir, auto-discover repos under it]' \
     '--checksum[also verify checksums (slow)]' \
     '--extra[report on-disk RPMs not in metadata]' \
+    '--allow-symlinks-outside[follow symlinks leading outside a local repo (unsafe)]' \
     '--max-age=[report repos whose repomd.xml is older than DAYS days]:days' \
     '(-n --newest-only)'{-n,--newest-only}'[only check the latest version of each package]' \
     '--ignore-modules[with --newest-only, ignore module metadata like dnf 5]' \
