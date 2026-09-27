@@ -9,6 +9,7 @@
 - Warn about packages without checksum with --checksum, and don't stop on a
   package without size in primary.xml
 - Always create the TLS context in rrcc, and warn when --insecure is used
+- Fix CodeQL findings in the test suite
 
 * Sat Sep 26 2026 Johan Hedin - 1.4.0
 - Add a test suite, run with 'make test' and 'make test-all'
