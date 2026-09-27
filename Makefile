@@ -45,7 +45,7 @@ INSTALL_DATA    ?= $(INSTALL) -m 0644
 MANCOMPRESS     ?= gzip -9nc
 
 DOCS := README.md ChangeLog
-BASHCOMP := bash-completion/$(PROGRAM)
+BASHCOMP := completions/$(PROGRAM).bash
 MAN1     := man/$(PROGRAM).1
 MAN1_IN  := $(MAN1).in
 
