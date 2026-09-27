@@ -225,8 +225,14 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
         if not self._authorized():
             return
         target = urlsplit(self.path)
-        host = target.hostname
-        if host not in _LOOPBACK_HOSTS:
+        # Pick the host from a fixed literal rather than passing the
+        # client-supplied hostname through, so the request can never be
+        # aimed anywhere but one of our own loopback test servers.
+        if target.hostname == "127.0.0.1":
+            host = "127.0.0.1"
+        elif target.hostname == "localhost":
+            host = "localhost"
+        else:
             self.send_error(403, "Only loopback targets are allowed")
             return
         self.owner.bump(self.command)
