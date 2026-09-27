@@ -68,6 +68,9 @@ Options:
     -q, --quiet          Print only the repos that have problems, and nothing
                          at all if every repo is consistent (for cron).
     -v, --verbose        Print a line for every package checked.
+    --no-progress        Don't show a progress line. By default it is shown on
+                         stderr when that is a terminal (not with -q or -v),
+                         once a repo takes more than half a second.
 
 TLS options for https:// repos (named after the dnf repo settings sslcacert,
 sslclientcert, sslclientkey and sslverify):
@@ -334,6 +337,248 @@ def copy_limited(src, dst, limit):
     return copied
 
 
+def format_size(n):
+    """n bytes as a short human readable size, like 1.5 GiB."""
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024 or unit == "TiB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+
+
+def format_duration(seconds):
+    """seconds as m:ss or h:mm:ss."""
+    minutes, secs = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+
+
+def terminal_can_color(environ=os.environ):
+    """Whether to use colors on a terminal, going by the same environment
+    variables as Python 3.13+ (NO_COLOR, FORCE_COLOR, PYTHON_COLORS and
+    TERM=dumb)."""
+    if environ.get("PYTHON_COLORS") in ("0", "1"):
+        return environ["PYTHON_COLORS"] == "1"
+    if environ.get("NO_COLOR"):
+        return False
+    if environ.get("FORCE_COLOR"):
+        return True
+    return environ.get("TERM", "dumb") != "dumb"
+
+
+class Progress:
+    """A progress line on a terminal, meant for stderr: which repo is being
+    checked and what is being done, and while files are checked a bar with
+    their number, the bytes hashed, the speed and the time left.
+
+    The line is redrawn by a background thread a few times a second, so it
+    keeps moving while one big package is hashed; the counters may be
+    updated from any thread. It only appears once a repo has taken longer
+    than delay seconds, so that quick runs don't flicker, and is cleared by
+    stop(), before the report is printed. With colors it looks like the
+    progress bars of pip, without them it uses Unicode block characters, and
+    it falls back to plain ASCII when the terminal's encoding is not UTF-8
+    (as with the C locale on Python 3.6). A disabled Progress does nothing."""
+
+    SPINNER_UNICODE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    SPINNER_ASCII = "|/-\\"
+    EIGHTHS = " ▏▎▍▌▋▊▉"  # partial blocks, 0/8 to 7/8
+    BAR_WIDTH = (10, 30)  # least and most
+    INTERVAL = 0.1  # seconds between redraws
+
+    # SGR codes
+    DIM, BOLD, GREEN, CYAN, GREY = "2", "1", "32", "36", "90"
+
+    def __init__(self, stream=None, enabled=True, unicode=None, color=None, delay=0.5):
+        self.stream = stream if stream is not None else sys.stderr
+        self.enabled = enabled
+        if unicode is None:
+            encoding = (getattr(self.stream, "encoding", None) or "").lower().replace("-", "")
+            unicode = encoding == "utf8"
+        self.unicode = unicode
+        self.color = terminal_can_color() if color is None else color
+        self.delay = delay
+        self._lock = threading.Lock()
+        self._thread = None
+        self._stop = threading.Event()
+        self._shown = 0  # width of what is on the line now
+        self._tick = 0
+        self._reset()
+
+    def _reset(self, label=""):
+        self.label = label
+        self.text = ""
+        self.total_items = None  # None while there is nothing to count
+        self.total_bytes = None
+        self.done_items = 0
+        self.done_bytes = 0
+        self.started = self.counting_since = time.monotonic()
+
+    # The API used by the checker
+
+    def start(self, label, text="reading metadata"):
+        """Begin showing progress for label, e.g. a repo."""
+        if not self.enabled:
+            return
+        sys.stdout.flush()  # the report so far must come before the line
+        with self._lock:
+            self._reset(label)
+            self.text = text
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="rrcc-progress", daemon=True)
+        self._thread.start()
+
+    def status(self, text):
+        """Show what is being done, without a bar."""
+        with self._lock:
+            self.text = text
+            self.total_items = self.total_bytes = None
+
+    def count(self, text, total_items, total_bytes=None):
+        """Show a bar for checking total_items files. With total_bytes, the
+        bar goes by bytes (for checksums), else by files."""
+        with self._lock:
+            self.text = text
+            self.total_items = total_items
+            self.total_bytes = total_bytes or None
+            self.done_items = self.done_bytes = 0
+            self.counting_since = time.monotonic()
+
+    def advance(self, items=0, nbytes=0):
+        with self._lock:
+            self.done_items += items
+            self.done_bytes += nbytes
+
+    def stop(self):
+        """Clear the line and stop the redrawing."""
+        if self._thread is None:
+            return
+        self._stop.set()
+        self._thread.join()
+        self._thread = None
+        with self._lock:
+            self._clear()
+
+    # Drawing
+
+    def _run(self):
+        while not self._stop.wait(self.INTERVAL):
+            with self._lock:
+                if time.monotonic() - self.started >= self.delay:
+                    self._draw()
+
+    def _write(self, text):
+        try:
+            self.stream.write(text)
+            self.stream.flush()
+        except (OSError, ValueError):
+            self.enabled = False  # e.g. the terminal went away
+
+    def _clear(self):
+        if self._shown:
+            self._write("\r\x1b[K" if self.color else "\r" + " " * self._shown + "\r")
+            self._shown = 0
+
+    def _draw(self):
+        if not self.enabled:
+            return
+        width = shutil.get_terminal_size().columns - 1  # the last column would wrap on some terminals
+        self._tick += 1
+        segments = self.render(width, time.monotonic())
+        visible = sum(len(text) for text, _ in segments)
+        if self.color:
+            line = "".join(f"\x1b[{sgr}m{text}\x1b[0m" if sgr else text for text, sgr in segments)
+            self._write("\r" + line + "\x1b[K")
+        else:
+            line = "".join(text for text, _ in segments)
+            self._write("\r" + line + " " * max(0, self._shown - visible))
+        self._shown = visible
+
+    # Fields after the bar, in the order shown, with the one that goes first
+    # when the line doesn't fit the terminal last
+    FIELDS = ("percent", "count", "bytes", "speed", "eta")
+    DROP_ORDER = ("speed", "bytes", "bar", "eta", "count", "percent")
+    MIN_LABEL = 20  # the label is shortened to this before fields are dropped
+
+    def render(self, width, now):
+        """The line as a list of (text, SGR code or None) segments that are
+        at most width characters together."""
+        spinner = self.SPINNER_UNICODE if self.unicode else self.SPINNER_ASCII
+        head = [(spinner[self._tick % len(spinner)], self.CYAN), (" ", None)]
+        fields = {}
+        if self.total_items is not None:
+            by_bytes = self.total_bytes is not None
+            done, total = (self.done_bytes, self.total_bytes) if by_bytes else (self.done_items, self.total_items)
+            fraction = min(1.0, done / total) if total else 1.0
+            elapsed = now - self.counting_since
+            rate = done / elapsed if elapsed > 0 else 0
+            fields["bar"] = [("  ", None)] + self._bar(fraction, self.BAR_WIDTH[0])
+            fields["percent"] = [(" ", None), (f"{fraction * 100:3.0f}%", self.BOLD)]
+            fields["count"] = [(f" {self.done_items}/{self.total_items}", None)]
+            if by_bytes:
+                fields["bytes"] = [(f" {format_size(self.done_bytes)}/{format_size(self.total_bytes)}", None)]
+            if elapsed >= 1 and rate > 0:  # too early to tell before that
+                speed = f"{format_size(rate)}/s" if by_bytes else f"{rate:.0f}/s"
+                fields["speed"] = [(f" {speed}", self.GREY)]
+                if done < total:
+                    fields["eta"] = [(f" {format_duration((total - done) / rate)} left", self.CYAN)]
+        label = self.label
+        text = f": {self.text}" if self.text and label else self.text
+
+        def length(segs):
+            return sum(len(t) for t, _ in segs)
+
+        def tail():
+            return [s for name in ("bar",) + self.FIELDS for s in fields.get(name, ())]
+
+        def overflow():
+            return length(head) + len(label) + len(text) + length(tail()) - width
+
+        # Shorten the label from the left, where a path is least telling,
+        # then drop fields, then shorten the label (and text) further.
+        ellipsis = "\u2026" if self.unicode else "..."
+
+        def shorten(s, by):
+            keep = len(s) - by - len(ellipsis)
+            return ellipsis + s[len(s) - keep:] if keep > 0 else ""
+
+        if overflow() > 0 and len(label) > self.MIN_LABEL:
+            label = shorten(label, min(overflow(), len(label) - self.MIN_LABEL))
+        for name in self.DROP_ORDER:
+            if overflow() <= 0:
+                break
+            fields.pop(name, None)
+        if overflow() > 0:
+            label = shorten(label, overflow())
+            if not label:
+                text = self.text
+        if overflow() > 0:
+            text = text[:max(0, len(text) - overflow())]
+        if "bar" in fields and overflow() < 0:  # widen the bar into the room left
+            least, most = self.BAR_WIDTH
+            fields["bar"][1:] = self._bar(fraction, min(most, least - overflow()))
+        return [s for s in head + [(label + text, None)] + tail() if s[0]]
+
+    def _bar(self, fraction, width):
+        if self.color and self.unicode:
+            # like pip and rich: a heavy line, with a half cell at the head
+            halves = int(fraction * width * 2)
+            full, half = divmod(halves, 2)
+            done = "━" * full + ("╸" if half else "")
+            rest = "━" * (width - len(done))
+            color = self.GREEN if fraction >= 1 else "35"  # magenta while running
+            return [(done, color), (rest, self.GREY)]
+        if self.unicode:
+            eighths = int(fraction * width * 8)
+            full, part = divmod(eighths, 8)
+            cells = "█" * full + (self.EIGHTHS[part] if full < width else "")
+            return [("│", None), (cells.ljust(width), self.GREEN), ("│", None)]
+        full = int(fraction * width)
+        return [("[" + "#" * full + "-" * (width - full) + "]", self.GREEN)]
+
+
+NO_PROGRESS = Progress(enabled=False)
+
+
 class LocalRepo:
     """A repository in a directory on disk. The methods below are what the
     checker needs from a repo, and are mirrored by HttpRepo. hrefs are the
@@ -365,11 +610,11 @@ class LocalRepo:
         path = self.locate(href)
         return os.path.getsize(path) if os.path.isfile(path) else None
 
-    def package_checksum_ok(self, href, algo_name, expected_hex, max_size=None):
+    def package_checksum_ok(self, href, algo_name, expected_hex, max_size=None, on_read=None):
         """True/False if the checksum of href matches, None if algo_name is
-        not supported."""
+        not supported. on_read(n) is called for every n bytes hashed."""
         with open(self.locate(href), "rb") as f:
-            return verify_checksum(f, algo_name, expected_hex)
+            return verify_checksum(f, algo_name, expected_hex, on_read=on_read)
 
     def iter_rpms(self):
         """Yield the normalized href of every *.rpm below the repo root,
@@ -598,12 +843,12 @@ class HttpRepo:
                 return None
             raise
 
-    def package_checksum_ok(self, href, algo_name, expected_hex, max_size=None):
+    def package_checksum_ok(self, href, algo_name, expected_hex, max_size=None, on_read=None):
         if self.has_local_copy(href):
             with open(self._downloads[href], "rb") as f:
-                return verify_checksum(f, algo_name, expected_hex, max_size)
+                return verify_checksum(f, algo_name, expected_hex, max_size, on_read)
         with self.client.open(self.locate(href)) as resp:
-            return verify_checksum(resp, algo_name, expected_hex, max_size)
+            return verify_checksum(resp, algo_name, expected_hex, max_size, on_read)
 
     def iter_rpms(self):
         for url in walk_http(self.client, self.root, skip_repodata=True):
@@ -1022,10 +1267,10 @@ def newest_packages(packages, modules=()):
     return [p for p in packages if id(p) in keep_ids]  # keep the metadata order
 
 
-def verify_checksum(f, algo_name, expected_hex, max_size=None):
+def verify_checksum(f, algo_name, expected_hex, max_size=None, on_read=None):
     """Hash the file-like object f. Returns None if the algo is unsupported.
     With max_size, no more than max_size + 1 bytes are read, and a longer
-    file is a mismatch."""
+    file is a mismatch. on_read(n) is called for every n bytes hashed."""
     hasher = CHECKSUM_ALGO_MAP.get(algo_name.lower())
     if hasher is None:
         return None  # unknown algo, skip
@@ -1036,6 +1281,8 @@ def verify_checksum(f, algo_name, expected_hex, max_size=None):
         if not chunk:
             break
         h.update(chunk)
+        if on_read is not None:
+            on_read(len(chunk))
         if remaining is not None:
             remaining -= len(chunk)
     if remaining is not None and remaining <= 0:
@@ -1142,11 +1389,12 @@ def _compare_primary_zck(repo, zck_href, zck_size, plain):
     return problems, f"primary_zck cross-checked against primary ({len(zck_seen)} packages)"
 
 
-def check_package(repo, pkg, verify):
+def check_package(repo, pkg, verify, on_read=None):
     """Check one package from primary.xml against the repo. Returns
     (pkg, problem, is_ok): problem is a message or None, and is_ok says
     whether the package should be reported as OK (a skipped checksum
-    still counts as OK, but comes with a warning as the problem)."""
+    still counts as OK, but comes with a warning as the problem).
+    on_read(n) is called for every n bytes hashed."""
     href = pkg["href"]
     result = True  # checksum result: True/False, or None if the algo is unsupported
     no_checksum = False
@@ -1161,7 +1409,8 @@ def check_package(repo, pkg, verify):
 
         if verify:
             if pkg["checksum_type"] and pkg["checksum"]:
-                result = repo.package_checksum_ok(href, pkg["checksum_type"], pkg["checksum"], pkg["size"])
+                result = repo.package_checksum_ok(href, pkg["checksum_type"], pkg["checksum"],
+                                                  pkg["size"], on_read)
             else:
                 no_checksum = True
     except OSError as e:
@@ -1176,17 +1425,31 @@ def check_package(repo, pkg, verify):
     return pkg, None, True
 
 
-def check_packages(repo, packages, args, verify=None):
+def check_packages(repo, packages, args, verify=None, what="packages"):
     """Yield check_package() results for the given packages, in order.
     verify(pkg) says whether to verify the checksum of a package; by
     default args.checksum decides. Remote repos are checked by args.jobs
-    threads at a time; a local repo is checked in the calling thread."""
+    threads at a time; a local repo is checked in the calling thread.
+    Progress is shown as checking the given number of what."""
     if verify is None:
         def verify(pkg):
             return args.checksum
 
+    progress = getattr(args, "progress", NO_PROGRESS)
+    total_bytes = sum(p["size"] or 0 for p in packages) if args.checksum else None
+    progress.count(what, len(packages), total_bytes)
+
     def check(pkg):
-        return check_package(repo, pkg, verify(pkg))
+        hashed = [0]
+
+        def on_read(n):
+            hashed[0] += n
+            progress.advance(nbytes=n)
+
+        result = check_package(repo, pkg, verify(pkg), on_read if progress.enabled else None)
+        # a package that wasn't hashed (or only partly) still counts as done
+        progress.advance(1, max(0, (pkg["size"] or 0) - hashed[0]))
+        return result
 
     if args.jobs <= 1 or not isinstance(repo, HttpRepo):
         yield from map(check, packages)
@@ -1215,7 +1478,7 @@ def verify_metadata(repo, entries, args):
         return False
 
     problems = []
-    for entry, problem, is_ok in check_packages(repo, files, args, verify):
+    for entry, problem, is_ok in check_packages(repo, files, args, verify, "metadata files"):
         if problem:
             problems.append(f"METADATA {problem} ({entry['type']})")
         if is_ok and args.verbose:
@@ -1312,7 +1575,9 @@ def _check_one_repo(repo, args):
         if is_ok and args.verbose:
             print(f"  OK: {printable(href)}")
 
+    progress = getattr(args, "progress", NO_PROGRESS)
     if zck_href is not None:
+        progress.status("cross-checking primary_zck")
         zck_problems, note = _compare_primary_zck(repo, zck_href, sizes[zck_href], plain)
         problems.extend(zck_problems)
         if note:
@@ -1332,6 +1597,7 @@ def _check_one_repo(repo, args):
             notes.insert(0, note)
 
     if args.extra:
+        progress.status("looking for files not in the metadata")
         try:
             for rel in repo.iter_rpms():
                 if rel not in seen_hrefs:
@@ -1382,6 +1648,8 @@ def main():
                         help="print only repos with problems, and nothing if all are consistent")
     output.add_argument("-v", "--verbose", action="store_true",
                         help="print a line for every package checked")
+    ap.add_argument("--no-progress", action="store_true",
+                    help="don't show the progress line that is shown when stderr is a terminal")
     ap.add_argument("--version", action="version", version=f"rrcc {__version__}",
                     help="print the version and exit")
     args = ap.parse_args()
@@ -1393,6 +1661,9 @@ def main():
         ap.error(str(e))
     if args.insecure:
         print("WARNING: --insecure: the identity of https:// servers is not verified", file=sys.stderr)
+    # -v prints to the terminal while checking, and -q is for running unattended
+    args.progress = progress = Progress(enabled=sys.stderr.isatty() and not (
+        args.quiet or args.verbose or args.no_progress))
 
     overall_problem = False
     overall_error = False
@@ -1410,12 +1681,15 @@ def main():
     for path in args.paths:
         top_path = normalize_url(path) if is_url(path) else os.path.abspath(path)
         if args.top_level:
+            progress.start(printable(top_path), "looking for repos")
             try:
                 found = find_repos(top_path, args.ssl_context)
             except (OSError, RuntimeError) as e:
                 print(f"ERROR: cannot search {top_path}: {type(e).__name__}: {printable(e)}", file=sys.stderr)
                 overall_error = True
                 continue
+            finally:
+                progress.stop()
             if not found:
                 print(f"ERROR: no repos found under {printable(top_path)} (looked for */repodata/repomd.xml)", file=sys.stderr)
                 overall_error = True
@@ -1438,7 +1712,11 @@ def main():
     for label, repo_root in repos:
         if not args.quiet:
             print(f"=== {printable(label)} ===")
-        status, count, problems, notes = check_one_repo(repo_root, args)
+        progress.start(printable(label))
+        try:
+            status, count, problems, notes = check_one_repo(repo_root, args)
+        finally:
+            progress.stop()
         total_packages += count
         if args.quiet:
             if status == "ok":

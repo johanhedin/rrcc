@@ -165,6 +165,27 @@ The exit status is the same as without this option.
 .BR \-v ", " \-\-verbose
 Print a line for every package checked.
 .TP
+.B \-\-no\-progress
+Don't show the progress line.
+When standard error is a terminal, and neither
+.B \-q
+nor
+.B \-v
+is given, a line on it shows which repository is being checked and what is
+being done, and while files are checked a bar with their number, the
+bytes hashed (with
+.BR \-\-checksum ),
+the speed and the time left.
+It only appears once a repository has taken more than half a second, and is
+cleared before the report of the repository is printed.
+It uses colors unless
+.B NO_COLOR
+is set or
+.B TERM
+is
+.IR dumb ,
+and plain ASCII unless the terminal's encoding is UTF-8.
+.TP
 .B \-\-version
 Print the version and exit.
 .TP
@@ -244,6 +265,18 @@ in the proxy.
 .B no_proxy
 Comma-separated list of host names, domains or addresses that are contacted
 directly instead of through the proxy.
+.TP
+.BR NO_COLOR ", " FORCE_COLOR ", " PYTHON_COLORS ", " TERM
+Whether the progress line uses colors, as for Python 3.13 and newer:
+.B PYTHON_COLORS
+set to 1 or 0 turns them on or off, else a non-empty
+.B NO_COLOR
+turns them off and a non-empty
+.B FORCE_COLOR
+on, and without these they are used unless
+.B TERM
+is unset or
+.IR dumb .
 .SH EXIT STATUS
 .TP
 .B 0

@@ -39,6 +39,9 @@ With `--max-age DAYS` a repository whose `repomd.xml` is older than that is
 reported as a problem, which catches a mirror that is consistent but has
 stopped syncing.
 
+On a terminal a progress line with a bar, the speed and the time left shows
+how far a long `--checksum` run has come; `--no-progress` turns it off.
+
 With `--quiet` only the repositories with problems are printed, and nothing
 at all when everything is consistent, so a cron job only sends mail when
 something is wrong.

@@ -18,4 +18,5 @@ _arguments -s -S \
     "--no-strict-x509[accept certificates that don't follow RFC 5280 strictly]" \
     '(-q --quiet -v --verbose)'{-q,--quiet}'[print only repos with problems]' \
     '(-q --quiet -v --verbose)'{-v,--verbose}'[print a line for every package checked]' \
+    "--no-progress[don't show the progress line on the terminal]" \
     '*:repo root directory or URL:_files -/'

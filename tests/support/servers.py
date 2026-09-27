@@ -16,6 +16,7 @@ import socket
 import socketserver
 import ssl
 import threading
+import time
 from urllib.parse import unquote, urlsplit
 
 
@@ -119,6 +120,8 @@ class _StaticHandler(http.server.SimpleHTTPRequestHandler):
     def _count(self):
         self.owner.bump(self.command)
         self.owner.requests.append((self.command, self.path))
+        if self.owner.delay:
+            time.sleep(self.owner.delay)
 
     def do_GET(self):
         self._count()
@@ -156,13 +159,15 @@ class StaticServer(_BaseServer):
     redirect_target: with redirect_prefix, where the redirect goes instead of
         this server, e.g. "http://127.0.0.1:1234/" (ends with a slash).
     listings: set to False to answer directory requests with 403.
+    delay: seconds to wait before answering each request, for a slow server.
     """
 
     handler_class = _StaticHandler
 
     def __init__(self, root, drop_after_request=False, redirect_prefix=None, listings=True,
-                 redirect_target=None):
+                 redirect_target=None, delay=0):
         self.root = root
+        self.delay = delay
         self.drop_after_request = drop_after_request
         self.redirect_prefix = redirect_prefix
         self.redirect_target = redirect_target

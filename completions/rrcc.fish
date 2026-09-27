@@ -19,3 +19,4 @@ complete -c rrcc -s k -l insecure -d "Don't verify the server certificate"
 complete -c rrcc -l no-strict-x509 -d "Accept certificates that don't follow RFC 5280 strictly"
 complete -c rrcc -s q -l quiet -d 'Print only repos with problems'
 complete -c rrcc -s v -l verbose -d 'Print a line for every package checked'
+complete -c rrcc -l no-progress -d "Don't show the progress line on the terminal"

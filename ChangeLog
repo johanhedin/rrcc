@@ -18,6 +18,8 @@
   strictly, e.g. from a home-made CA, which Python 3.13+ rejects by default
 - Add --quiet to print only the repositories with problems, and nothing
   when all are consistent
+- Show a progress line with a bar, speed and time left on stderr when it
+  is a terminal, and add --no-progress to turn it off
 
 * Sat Sep 26 2026 Johan Hedin - 1.4.0
 - Add a test suite, run with 'make test' and 'make test-all'
