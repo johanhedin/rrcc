@@ -6,48 +6,22 @@
 This repository contains a Python script called `rrcc`, which stands
 for "RPM Repository Consistency Checker".
 
-The script can be run against an RPM repository on disk to check if the
-repository is consistent. A repository is consistent if all files referenced
-from the metadata in the `repodata` directory exist and have the correct
-size and, optionally, the correct checksum. The metadata files listed in
-`repodata/repomd.xml` are checked against their recorded size and checksum
-too.
+`rrcc` checks that an RPM repository is consistent: that all files referenced
+from the metadata in the `repodata` directory exist and have the correct size
+and, optionally, the correct checksum. A typical use case is mirroring a
+remote RPM repository and wanting to automate checks that tell you whether
+the mirror is in a usable state.
 
-A repository served over HTTP(S) can be checked as well by giving its URL
-instead of a directory, for example `rrcc http://host/path/to/repo`. Only the
-metadata that rrcc reads and, with `--checksum`, the packages and the rest of
-the metadata are downloaded; otherwise the presence and size of each file is
-checked with a HEAD request. Connections are kept
-alive and several packages are checked in parallel, by default 8; change that
-with `--jobs`. A proxy is used if it is set in the `http_proxy`/`https_proxy`
-environment variables, except for hosts listed in `no_proxy`. For HTTPS, the
-CA certificates and a client certificate can be given with `--ca-cert`,
-`--client-cert` and `--client-key`, for example to check the RHEL CDN with
-an entitlement certificate. Python 3.13 and newer reject certificates that
-don't follow RFC 5280 strictly, which is common for a certificate from a
-home-made CA ("Missing Authority Key Identifier"), even though curl and dnf
-accept them. `--no-strict-x509` accepts such a certificate, but still verifies
-it, unlike `--insecure`.
+Key features:
 
-With `--newest-only` only the latest version of each package is checked,
-which is what you want for a mirror made with `dnf reposync --newest-only`.
-Modular repositories are handled like dnf 4 (RHEL 8 to 10) does; add
-`--ignore-modules` for a mirror made with dnf 5 (Fedora 41 and newer), which
-ignores the modules.
-
-With `--max-age DAYS` a repository whose `repomd.xml` is older than that is
-reported as a problem, which catches a mirror that is consistent but has
-stopped syncing.
-
-On a terminal a progress line with a bar, the speed and the time left shows
-how far a long `--checksum` run has come; `--no-progress` turns it off.
-
-With `--quiet` only the repositories with problems are printed, and nothing
-at all when everything is consistent, so a cron job only sends mail when
-something is wrong.
-
-A typical use case is mirroring a remote RPM repository and wanting to
-automate checks that tell you whether the mirror is in a usable state.
+- Checks repositories on disk or served over HTTP(S), with parallel requests,
+  proxy support and client certificates (for example for the RHEL CDN).
+- Optionally verifies the checksum of every package and metadata file.
+- Handles mirrors made with `dnf reposync --newest-only` and modular
+  repositories, as dnf 4 and dnf 5 do.
+- Reports mirrors that are consistent but have stopped syncing.
+- Cron friendly: can print only the repositories with problems, and nothing
+  when everything is fine.
 
 ## Security
 
