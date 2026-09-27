@@ -145,3 +145,7 @@ make ci-local CI_IMAGES="rockylinux:8 fedora:44"
 ```
 
 The output of each container is kept in `ci/logs/`.
+
+---
+
+[![Claude Code](.github/claude-code.svg)](https://claude.com/claude-code) Developed with the help of [Claude Code](https://claude.com/claude-code)
