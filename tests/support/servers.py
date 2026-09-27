@@ -19,6 +19,13 @@ import threading
 from urllib.parse import unquote, urlsplit
 
 
+def _no_crlf(value):
+    """Strip characters that could inject an extra header or split the
+    response (CWE-113), even though these values come from our own test
+    fixtures rather than a real attacker."""
+    return value.replace("\r", "").replace("\n", "")
+
+
 class _ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -129,7 +136,8 @@ class _StaticHandler(http.server.SimpleHTTPRequestHandler):
         prefix = self.owner.redirect_prefix
         if prefix and self.path.startswith(prefix):
             self.send_response(302)
-            self.send_header("Location", (self.owner.redirect_target or "/") + self.path[len(prefix):])
+            location = (self.owner.redirect_target or "/") + self.path[len(prefix):]
+            self.send_header("Location", _no_crlf(location))
             self.send_header("Content-Length", "0")
             self.end_headers()
             return True
@@ -252,9 +260,9 @@ class _ProxyHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(resp.status)
         for key, value in resp.getheaders():
             if key.lower() not in ("connection", "keep-alive", "transfer-encoding", "content-length"):
-                self.send_header(key, value)
+                self.send_header(_no_crlf(key), _no_crlf(value))
         length = resp.getheader("Content-Length") if self.command == "HEAD" else None
-        self.send_header("Content-Length", length or str(len(body)))
+        self.send_header("Content-Length", _no_crlf(length or str(len(body))))
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
