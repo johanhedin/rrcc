@@ -266,7 +266,7 @@ class ErrorTest(TestCase):
 class CommandLineTest(TestCase):
     def test_version(self):
         result = self.rrcc("--version", rc=0)
-        self.assertEqual(result.out.strip(), f"rrcc {load_rrcc().__version__}")
+        self.assertEqual(result.out.strip(), load_rrcc().__version__)
 
     def test_invalid_jobs(self):
         for value in ("0", "-1", "x"):
