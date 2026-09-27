@@ -173,7 +173,9 @@ class TLSServer(StaticServer):
     def __init__(self, root, pki_dir, require_client_cert=False, **kwargs):
         super().__init__(root, **kwargs)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        # minimum_version needs Python 3.7; the flags work back to 3.2, and
+        # this project still supports Python 3.6.
+        ctx.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1
         ctx.load_cert_chain(os.path.join(pki_dir, "server.pem"), os.path.join(pki_dir, "server.key"))
         if require_client_cert:
             ctx.verify_mode = ssl.CERT_REQUIRED
