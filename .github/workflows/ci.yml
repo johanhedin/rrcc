@@ -7,7 +7,11 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: &docs
+      - "README.md"
+      - "LICENCE"
   pull_request:
+    paths-ignore: *docs
   workflow_dispatch:
   schedule:
     # Weekly, to catch changes in the distributions (new rpm, dnf, Python)
