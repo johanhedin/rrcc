@@ -603,9 +603,9 @@ class LocalRepo:
     checker needs from a repo, and are mirrored by HttpRepo. hrefs are the
     relative paths used in the metadata."""
 
-    def __init__(self, root, allow_symlinks_outside=False):
+    def __init__(self, root, follow_symlinks=False):
         self.root = root
-        self.allow_symlinks_outside = allow_symlinks_outside
+        self.follow_symlinks = follow_symlinks
         self._real_root = os.path.realpath(root)
 
     def close(self):
@@ -614,13 +614,13 @@ class LocalRepo:
     def locate(self, href):
         """Where href lives, for use in messages. Raises UnsafeHrefError
         for an href that is not inside the repository, lexically (check_href)
-        or, unless allow_symlinks_outside, because a symlink resolves
+        or, unless follow_symlinks, because a symlink resolves
         outside of it: a mirror is untrusted input too, and a package or
         metadata file that is really a symlink to, say, /etc/shadow must not
         be opened, hashed (an oracle for its contents) or have its size
         reported (which would leak that size)."""
         path = os.path.join(self.root, check_href(href))
-        if not self.allow_symlinks_outside:
+        if not self.follow_symlinks:
             real = os.path.realpath(path)
             if real != self._real_root and not real.startswith(self._real_root + os.sep):
                 raise UnsafeHrefError(
@@ -651,7 +651,7 @@ class LocalRepo:
     def iter_rpms(self):
         """Yield the normalized href of every *.rpm below the repo root,
         except those under repodata/."""
-        for dirpath, _, filenames in os.walk(self.root, followlinks=self.allow_symlinks_outside):
+        for dirpath, _, filenames in os.walk(self.root, followlinks=self.follow_symlinks):
             if os.sep + "repodata" in dirpath + os.sep:
                 continue
             for fn in filenames:
@@ -1016,10 +1016,10 @@ def walk_http(client, top, skip_repodata=False):
             todo.append((d, depth + 1))
 
 
-def open_repo(root, ssl_context=None, ssl_context_bare=None, allow_symlinks_outside=False):
+def open_repo(root, ssl_context=None, ssl_context_bare=None, follow_symlinks=False):
     if is_url(root):
         return HttpRepo(root, ssl_context, ssl_context_bare)
-    return LocalRepo(root, allow_symlinks_outside)
+    return LocalRepo(root, follow_symlinks)
 
 
 def make_ssl_context(args, with_client_cert=True):
@@ -1482,16 +1482,16 @@ def find_http_repos(top_url, ssl_context=None, ssl_context_bare=None):
     return sorted(repos)
 
 
-def find_repos(top_level, ssl_context=None, ssl_context_bare=None, allow_symlinks_outside=False):
+def find_repos(top_level, ssl_context=None, ssl_context_bare=None, follow_symlinks=False):
     """Recursively find directories under top_level that contain a valid
     repodata/repomd.xml. Does not descend into repodata/ itself. By default,
     a symlinked directory is not followed (matching LocalRepo's refusal of
-    hrefs that resolve outside of a repo); allow_symlinks_outside follows it,
+    hrefs that resolve outside of a repo); follow_symlinks follows it,
     for a parent directory that itself uses symlinks to lay out its repos."""
     if is_url(top_level):
         return find_http_repos(top_level, ssl_context, ssl_context_bare)
     repos = []
-    for dirpath, dirnames, _filenames in os.walk(top_level, followlinks=allow_symlinks_outside):
+    for dirpath, dirnames, _filenames in os.walk(top_level, followlinks=follow_symlinks):
         if "repodata" in dirnames:
             if os.path.isfile(os.path.join(dirpath, "repodata", "repomd.xml")):
                 repos.append(dirpath)
@@ -1513,7 +1513,7 @@ def check_one_repo(repo_root, args):
     On 'error', problems is a single-element list with the error message.
     notes is a list of informational lines about what else was checked.
     """
-    repo = open_repo(repo_root, args.ssl_context, args.ssl_context_bare, args.allow_symlinks_outside)
+    repo = open_repo(repo_root, args.ssl_context, args.ssl_context_bare, args.follow_symlinks)
     try:
         return _check_one_repo(repo, args)
     except READ_ERRORS as e:
@@ -1805,7 +1805,7 @@ def main():
         long_help="also report *.rpm files on disk that are NOT referenced by primary.xml "
                   "(orphans / stale files). For a URL this needs directory listings enabled "
                   "on the web server.")
-    add(ap, "--allow-symlinks-outside", action="store_true",
+    add(ap, "--follow-symlinks", action="store_true",
         help="follow symlinks leading outside a local repo (unsafe)",
         long_help="for a repo in a directory, follow symlinks that lead outside of it, instead "
                   "of refusing them like any other location outside of the repo. Only use this "
@@ -1909,7 +1909,7 @@ def main():
             progress.start(printable(top_path), "looking for repos")
             try:
                 found = find_repos(top_path, args.ssl_context, args.ssl_context_bare,
-                                    args.allow_symlinks_outside)
+                                    args.follow_symlinks)
             except (OSError, RuntimeError, http.client.HTTPException) as e:
                 print(f"ERROR: cannot search {top_path}: {type(e).__name__}: {printable(e)}", file=sys.stderr)
                 overall_error = True

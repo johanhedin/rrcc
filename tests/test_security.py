@@ -268,9 +268,9 @@ class SymlinkTest(TestCase):
         # the target (its size, or that its checksum matches) is reported
         self.assertNotIn(str(len(pkg["content"])), result.out)
 
-        # --allow-symlinks-outside opts back in, for a mirror that symlinks
+        # --follow-symlinks opts back in, for a mirror that symlinks
         # packages in from a shared pool on purpose
-        self.assertConsistent(self.rrcc("--allow-symlinks-outside", "--checksum", self.path("repo")))
+        self.assertConsistent(self.rrcc("--follow-symlinks", "--checksum", self.path("repo")))
 
     def test_symlink_inside_repo_is_fine(self):
         repo = RepoBuilder(self.path("repo"))
@@ -289,7 +289,7 @@ class SymlinkTest(TestCase):
         result = self.rrcc("--top-level", self.path("pub"), rc=2)
         self.assertIn("no repos found under", result.err)
 
-        result = self.rrcc("--top-level", "--allow-symlinks-outside", self.path("pub"), rc=0)
+        result = self.rrcc("--top-level", "--follow-symlinks", self.path("pub"), rc=0)
         self.assertIn("Found 1 repo(s) under", result.out)
 
 

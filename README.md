@@ -29,7 +29,7 @@ Key features:
 input. Locations in the metadata that are absolute or lead outside of the
 repository (`../`, `//host/...`), or, for a repository in a directory, a
 symlink that resolves outside of it, are refused and reported as problems
-instead of being opened or requested (`--allow-symlinks-outside` turns this
+instead of being opened or requested (`--follow-symlinks` turns this
 off, for a mirror that intentionally symlinks packages in from a shared
 pool). Redirects are followed, except from `https://` to `http://` and to
 anything other than `http(s)://`, and a `--client-cert` is only ever sent to

@@ -4,7 +4,7 @@ _rrcc()
 {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local opts="-h --help --top-level --checksum --extra --allow-symlinks-outside --max-age -n --newest-only
+    local opts="-h --help --top-level --checksum --extra --follow-symlinks --max-age -n --newest-only
                 --ignore-modules -j --jobs --ca-cert --client-cert --client-key -k --insecure --no-strict-x509
                 -q --quiet -v --verbose --no-progress --version"
 
