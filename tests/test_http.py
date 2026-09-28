@@ -184,6 +184,40 @@ class HttpListingTest(HttpTestCase):
         self.assertIn("=== os/x86_64/ ===", result.out)
         self.assertIn("Summary: 2 repo(s), 12 package(s) checked total.", result.out)
 
+    def write_page(self, html, *parts):
+        os.makedirs(self.path(*parts[:-1]), exist_ok=True)
+        with open(self.path(*parts), "w") as f:
+            f.write(html)
+
+    def test_top_level_index_html_listing(self):
+        # Like the static indexes generated for an S3 bucket: directories
+        # are linked as dir/index.html, and the parent as ../index.html.
+        standard_repo(self.path("pub", "os", "x86_64"))
+        self.write_page('<a href="index_by_size.html">Size</a> <a href="../index.html">Parent</a>'
+                        '<a href="os/index.html">os/</a> <a href="README.txt">README.txt</a>',
+                        "pub", "index.html")
+        self.write_page('<a href="../index.html">Parent Directory</a>'
+                        '<a href="x86_64/index.html">x86_64/</a>', "pub", "os", "index.html")
+        result = self.rrcc("--top-level", self.serve().url + "pub/", rc=0)
+        self.assertIn("Found 1 repo(s) under", result.out)
+        self.assertIn("=== os/x86_64/ ===", result.out)
+
+    def test_top_level_links_without_slash(self):
+        # Like a hand-made mirror page: directories linked without the
+        # trailing slash, which the server adds with a redirect.
+        standard_repo(self.path("pub", "os"))
+        standard_repo(self.path("pub", "text-hint"))
+        self.write_page("key", "pub", "RPM-GPG-KEY-test")
+        self.write_page('<a href="/pub/os">Base OS</a> <a href="text-hint">text-hint/</a>'
+                        '<a href="RPM-GPG-KEY-test">GPG key</a> <a href="gone">Gone</a>',
+                        "pub", "index.html")
+        server = self.serve()
+        result = self.rrcc("--top-level", server.url + "pub/", rc=0)
+        self.assertIn("Found 2 repo(s) under", result.out)
+        self.assertIn("=== os/ ===", result.out)
+        self.assertIn("=== text-hint/ ===", result.out)
+        self.assertNotIn(("HEAD", "/pub/text-hint"), server.requests)  # the link text was enough
+
     def test_top_level_nothing_found(self):
         os.makedirs(self.path("pub", "empty"))
         result = self.rrcc("--top-level", self.serve().url + "pub/", rc=2)

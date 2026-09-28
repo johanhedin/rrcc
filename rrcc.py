@@ -33,7 +33,9 @@ Multiple repos under a common parent:
     "repodata/repomd.xml" in it, and checks each one as a separate repo.
     Useful when you mirror several release/arch trees (or os/debug/source
     variants) under one parent directory. For a URL this crawls the
-    directory listings ("Index of ...") that the web server generates.
+    directory listings ("Index of ...") that the web server generates, or
+    generated index pages that link directories as dir/index.html or
+    without a trailing slash.
 """
 
 # The end of --help, after the options. -h leaves it out.
@@ -209,6 +211,7 @@ MAX_MODULES_SIZE = 256 * 1024**2     # modules.yaml, decompressed
 MAX_LISTING_DEPTH = 32               # directory levels followed in a web server's listings
 MAX_LISTED_DIRS = 100_000            # total directories followed in a web server's listings
 MAX_LISTING_SIZE = 16 * 1024**2      # a single directory listing page
+MAX_LISTING_PROBES = 1000            # links on one listing page probed for being a directory
 DRAIN_LIMIT = 1024**2                # a redirect/error response body that is read to reuse the connection
 PROLOG_PEEK = 64 * 1024              # read upfront to look for a <!DOCTYPE before parsing untrusted XML
 
@@ -798,6 +801,7 @@ class HttpClient:
                 raise HttpStatusError(resp.status, resp.reason, url)
             if method == "HEAD":
                 resp.read()  # no body, but http.client only frees the connection after a read
+            resp.rrcc_url = url  # where the redirects, if any, ended up
             yield resp
         finally:
             if not resp.isclosed():
@@ -907,30 +911,78 @@ class HttpRepo:
 
 
 class _LinkParser(HTMLParser):
+    """Collects [href, text] of every <a href=...> in a page."""
+
     def __init__(self):
         super().__init__()
-        self.hrefs = []
+        self.links = []
+        self._current = None
 
     def handle_starttag(self, tag, attrs):
         if tag == "a":
-            for name, value in attrs:
-                if name == "href" and value:
-                    self.hrefs.append(value)
+            href = dict(attrs).get("href")
+            self._current = [href, ""] if href else None
+            if self._current:
+                self.links.append(self._current)
+
+    def handle_endtag(self, tag):
+        if tag == "a":
+            self._current = None
+
+    def handle_data(self, data):
+        if self._current is not None:
+            self._current[1] += data
+
+
+# A last path segment ending like this names a file (x.rpm, repomd.xml), not
+# a directory. 10.0 or RPM-GPG-KEY-EPEL-8 could be either.
+_FILE_EXTENSION = re.compile(r"\.[A-Za-z][A-Za-z0-9]*$")
+
+
+def _is_http_dir(client, url):
+    """True if the server redirects url (without a trailing slash) to url + "/",
+    as web servers do for a directory."""
+    try:
+        with client.open(url, "HEAD") as resp:
+            return resp.rrcc_url == url + "/"
+    except HttpStatusError:
+        return False
 
 
 def list_http_dir(client, url):
     """Return (dirs, files) as absolute URLs for the entries linked from the
     directory listing at url. Sort links, the parent directory and anything
-    outside of url are ignored."""
+    outside of url are ignored.
+
+    A link ending in a slash is a directory. Generated ("fancy") listings
+    don't always do that, so a link is also a directory if it goes to
+    dir/index.html (e.g. the static indexes of an S3 bucket), if its text
+    ends in a slash, or if it has no file extension and the server
+    redirects it to the same URL with a slash (a HEAD request, for at most
+    MAX_LISTING_PROBES links on the page)."""
     with client.open(url) as resp:
         html = read_limited(resp, MAX_LISTING_SIZE).decode("utf-8", errors="replace")
     parser = _LinkParser()
     parser.feed(html)
     dirs, files = [], []
-    for href in parser.hrefs:
-        full = urldefrag(urljoin(url, href))[0]
-        if "?" in full or full == url or not full.startswith(url):
+    probes = 0
+    for href, text in parser.links:
+        full = urldefrag(urljoin(url, href.strip()))[0]
+        if "?" in full:
             continue
+        name = full.rsplit("/", 1)[-1]  # "" for a URL ending in a slash
+        if name in ("index.html", "index.htm"):
+            full = full[:-len(name)]
+        elif name and text.strip().endswith("/"):
+            full += "/"
+        if full == url or not full.startswith(url):
+            continue
+        if (not full.endswith("/") and not _FILE_EXTENSION.search(full)
+                and full not in files and full + "/" not in dirs
+                and probes < MAX_LISTING_PROBES):
+            probes += 1
+            if _is_http_dir(client, full):
+                full += "/"
         target = dirs if full.endswith("/") else files
         if full not in target:
             target.append(full)

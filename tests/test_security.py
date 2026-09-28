@@ -337,6 +337,27 @@ class ListingLimitsTest(TestCase):
         finally:
             rrcc.MAX_LISTING_SIZE = old
 
+    def test_links_probed_for_directories_are_limited(self):
+        os.makedirs(self.path("pub"))
+        links = [f'<a href="k{i}">k{i}</a>' for i in range(10)]
+        links += ['<a href="a.rpm">a.rpm</a>', '<a href="repomd.xml">repomd.xml</a>']
+        with open(self.path("pub", "index.html"), "w") as f:
+            f.write("".join(links))
+        server = StaticServer(self.tmp).start()
+        self.addCleanup(server.stop)
+        rrcc = load_rrcc()
+        client = rrcc.HttpClient()
+        self.addCleanup(client.close)
+        old = rrcc.MAX_LISTING_PROBES
+        rrcc.MAX_LISTING_PROBES = 3
+        try:
+            dirs, files = rrcc.list_http_dir(client, server.url + "pub/")
+        finally:
+            rrcc.MAX_LISTING_PROBES = old
+        self.assertEqual(dirs, [])
+        self.assertEqual(len(files), 12)
+        self.assertEqual([p for m, p in server.requests if m == "HEAD"], ["/pub/k0", "/pub/k1", "/pub/k2"])
+
     def test_too_many_directories(self):
         standard_repo(self.path("pub", "repo"))
         for i in range(5):
