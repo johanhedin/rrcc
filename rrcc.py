@@ -247,7 +247,8 @@ class HelpFormatter(argparse.RawDescriptionHelpFormatter):
         super().__init__(prog, max_help_position=max_help_position, **kwargs)
 
     def _format_action_invocation(self, action):
-        if action.option_strings and action.nargs != 0:
+        # Python 3.13+ does this by itself, and 3.14+ also colors it
+        if sys.version_info < (3, 13) and action.option_strings and action.nargs != 0:
             args = self._format_args(action, self._get_default_metavar_for_optional(action))
             return f"{', '.join(action.option_strings)} {args}"
         return super()._format_action_invocation(action)
