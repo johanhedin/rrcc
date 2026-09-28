@@ -192,7 +192,7 @@ class NewestOnlyTest(TestCase):
         repo.build()
         with open(repo.metadata["modules"], "wb") as f:
             f.write(b"not gzip")
-        result = self.rrcc("-n", "--ignore-modules", self.tmp, rc=1)
+        result = self.rrcc("-n", "-i", self.tmp, rc=1)
         self.assertIn("1 packages checked", result.out)
         self.assertProblem(result, "METADATA SIZE MISMATCH")
 
@@ -220,6 +220,12 @@ class DiscoveryTest(TestCase):
         self.assertIn("=== os/x86_64 ===", result.out)
         self.assertIn("=== updates/x86_64 ===", result.out)
         self.assertIn("Summary: 2 repo(s), 12 package(s) checked total.", result.out)
+
+    def test_short_options(self):
+        standard_repo(self.path("mirror", "os", "x86_64"))
+        result = self.rrcc("-t", "-c", "-e", "-f", "-m", "100000", self.path("mirror"), rc=0)
+        self.assertIn("=== os/x86_64 ===", result.out)
+        self.assertIn("repomd.xml is ", result.out)
 
     def test_top_level_problem_in_one_repo(self):
         standard_repo(self.path("mirror", "a"))

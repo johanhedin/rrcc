@@ -1,6 +1,8 @@
 * Mon Sep 28 2026 Johan Hedin - 1.x.y (not released yet)
 - Rename --allow-symlinks-outside to --follow-symlinks, which fits the help
   text
+- Add short options -t, -c, -e, -f, -m and -i for --top-level, --checksum,
+  --extra, --follow-symlinks, --max-age and --ignore-modules
 
 * Mon Sep 28 2026 Johan Hedin - 1.5.2
 - Understand "fancy" directory listings for --top-level

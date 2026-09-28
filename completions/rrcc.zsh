@@ -5,13 +5,13 @@ _arguments -s -S \
     '(- *)-h[show a short help and exit]' \
     '(- *)--help[show the full help and exit]' \
     '(- *)--version[print the version and exit]' \
-    '--top-level[treat each path as a parent dir, auto-discover repos under it]' \
-    '--checksum[also verify checksums (slow)]' \
-    '--extra[report on-disk RPMs not in metadata]' \
-    '--follow-symlinks[follow symlinks leading outside a local repo (unsafe)]' \
-    '--max-age=[report repos whose repomd.xml is older than DAYS days]:days' \
+    '(-t --top-level)'{-t,--top-level}'[treat each path as a parent dir, auto-discover repos under it]' \
+    '(-c --checksum)'{-c,--checksum}'[also verify checksums (slow)]' \
+    '(-e --extra)'{-e,--extra}'[report on-disk RPMs not in metadata]' \
+    '(-f --follow-symlinks)'{-f,--follow-symlinks}'[follow symlinks leading outside a local repo (unsafe)]' \
+    '(-m --max-age)'{-m+,--max-age=}'[report repos whose repomd.xml is older than DAYS days]:days' \
     '(-n --newest-only)'{-n,--newest-only}'[only check the latest version of each package]' \
-    '--ignore-modules[with --newest-only, ignore module metadata like dnf 5]' \
+    '(-i --ignore-modules)'{-i,--ignore-modules}'[with --newest-only, ignore module metadata like dnf 5]' \
     '(-j --jobs)'{-j+,--jobs=}'[number of packages to check in parallel for http(s) repos]:number of jobs' \
     '--ca-cert=[trust only the CA certificate(s) in this PEM file or directory]:CA certificate file or directory:_files' \
     '--client-cert=[authenticate with this client certificate (PEM)]:client certificate:_files' \

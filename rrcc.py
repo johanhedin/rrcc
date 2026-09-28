@@ -238,7 +238,19 @@ def positive_float(value):
 
 class HelpFormatter(argparse.RawDescriptionHelpFormatter):
     """Keeps the layout of the description and epilog, and doesn't split
-    paths like /etc/rhsm/ca/redhat-uep.pem at a hyphen."""
+    paths like /etc/rhsm/ca/redhat-uep.pem at a hyphen. An option with both
+    forms and an argument is shown as "-j, --jobs N" instead of "-j N,
+    --jobs N", and the help starts one column further right than by default
+    so that "-f, --follow-symlinks" fits before it."""
+
+    def __init__(self, prog, max_help_position=25, **kwargs):
+        super().__init__(prog, max_help_position=max_help_position, **kwargs)
+
+    def _format_action_invocation(self, action):
+        if action.option_strings and action.nargs != 0:
+            args = self._format_args(action, self._get_default_metavar_for_optional(action))
+            return f"{', '.join(action.option_strings)} {args}"
+        return super()._format_action_invocation(action)
 
     def _split_lines(self, text, width):
         return textwrap.wrap(" ".join(text.split()), width, break_on_hyphens=False)
@@ -1793,26 +1805,26 @@ def main():
                   "\"repodata/\", or with --top-level a parent directory of several repos")
     ap.add_argument("-h", action="help", help="show this short help and exit")
     ap.add_argument("--help", action=FullHelpAction, help="show the full help and exit")
-    add(ap, "--top-level", action="store_true",
+    add(ap, "-t", "--top-level", action="store_true",
         help="treat each 'path' as a parent dir; auto-discover repos under it",
         long_help="treat the path as a parent directory containing multiple repos; "
                   "auto-discover and check each one")
-    add(ap, "--checksum", action="store_true", help="also verify checksums (slow)",
+    add(ap, "-c", "--checksum", action="store_true", help="also verify checksums (slow)",
         long_help="verify checksums too (slow: reads every RPM); without this flag, only "
                   "presence and size are checked. For a remote repo this also verifies the "
                   "checksum of every metadata file, which downloads all of them.")
-    add(ap, "--extra", action="store_true", help="report on-disk RPMs not in metadata",
+    add(ap, "-e", "--extra", action="store_true", help="report on-disk RPMs not in metadata",
         long_help="also report *.rpm files on disk that are NOT referenced by primary.xml "
                   "(orphans / stale files). For a URL this needs directory listings enabled "
                   "on the web server.")
-    add(ap, "--follow-symlinks", action="store_true",
+    add(ap, "-f", "--follow-symlinks", action="store_true",
         help="follow symlinks leading outside a local repo (unsafe)",
         long_help="for a repo in a directory, follow symlinks that lead outside of it, instead "
                   "of refusing them like any other location outside of the repo. Only use this "
                   "for a mirror you made yourself, e.g. one that symlinks packages in from a "
                   "shared pool: a mirror from someone else could use a symlink to make rrcc "
                   "read (and report the size, or a checksum match, of) an arbitrary file.")
-    add(ap, "--max-age", type=positive_float, metavar="DAYS",
+    add(ap, "-m", "--max-age", type=positive_float, metavar="DAYS",
         help="report a repo whose repomd.xml is older than DAYS days (a fraction works too)",
         long_help="report a repo whose repomd.xml is older than DAYS days (a fraction like "
                   "0.5 works too), going by the newest <timestamp> in it. Catches a mirror "
@@ -1823,7 +1835,7 @@ def main():
                   "listed in primary.xml, and skip the older ones. Same as 'dnf reposync "
                   "--newest-only', so use it to check a mirror made that way. Modular repos "
                   "are handled like dnf 4 does it (the module metadata in modules.yaml is read).")
-    add(ap, "--ignore-modules", action="store_true",
+    add(ap, "-i", "--ignore-modules", action="store_true",
         help="with --newest-only: ignore module metadata, like dnf 5's reposync does",
         long_help="with --newest-only, ignore the module metadata and just keep the latest "
                   "version of each package, like dnf 5 (Fedora 41+) does. Use it for a mirror "

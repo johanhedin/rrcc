@@ -4,8 +4,8 @@ _rrcc()
 {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local opts="-h --help --top-level --checksum --extra --follow-symlinks --max-age -n --newest-only
-                --ignore-modules -j --jobs --ca-cert --client-cert --client-key -k --insecure --no-strict-x509
+    local opts="-h --help -t --top-level -c --checksum -e --extra -f --follow-symlinks -m --max-age -n --newest-only
+                -i --ignore-modules -j --jobs --ca-cert --client-cert --client-key -k --insecure --no-strict-x509
                 -q --quiet -v --verbose --no-progress --version"
 
     compopt -o filenames 2>/dev/null
@@ -19,7 +19,7 @@ _rrcc()
             COMPREPLY=( $(compgen -f -- "$cur") )
             return 0
             ;;
-        -j|--jobs|--max-age)
+        -j|--jobs|-m|--max-age)
             compopt +o filenames 2>/dev/null
             COMPREPLY=()
             return 0

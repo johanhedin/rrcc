@@ -64,7 +64,7 @@ A
 file that cannot be read is reported as a problem.
 .SH OPTIONS
 .TP
-.B \-\-top\-level
+.BR \-t ", " \-\-top\-level
 Treat each
 .I path
 as a parent directory containing multiple repositories.
@@ -79,7 +79,7 @@ This is useful when several release or architecture trees, or
 .IR os / debug / source
 variants, are mirrored under one parent directory.
 .TP
-.B \-\-checksum
+.BR \-c ", " \-\-checksum
 Also verify the checksum of every package.
 This is slow because every RPM file has to be read.
 Without this option only the presence and size of each package are checked.
@@ -90,7 +90,7 @@ Without it, only the metadata files that
 reads anyway have their checksum verified, and the others are checked for
 presence and size.
 .TP
-.B \-\-extra
+.BR \-e ", " \-\-extra
 Also report
 .I *.rpm
 files found on disk that are not referenced by
@@ -98,7 +98,7 @@ files found on disk that are not referenced by
 such as orphaned or stale files.
 For a URL this requires that the web server has directory listings enabled.
 .TP
-.B \-\-follow\-symlinks
+.BR \-f ", " \-\-follow\-symlinks
 For a repository in a directory, follow a symlink that leads outside of it,
 instead of refusing it like any other location outside of the repository.
 Only use this for a mirror made in a way you control, for example one that
@@ -107,7 +107,7 @@ otherwise use a symlink to make
 .B rrcc
 read, and report the size or a checksum match of, an arbitrary file.
 .TP
-.BI \-\-max\-age " DAYS"
+.BR \-m ", " \-\-max\-age " \fIDAYS\fR"
 Report a repository whose
 .I repomd.xml
 is more than
@@ -147,7 +147,7 @@ and are still included in the
 .I primary_zck
 cross-check.
 .TP
-.B \-\-ignore\-modules
+.BR \-i ", " \-\-ignore\-modules
 With
 .BR \-\-newest\-only ,
 ignore the module metadata and keep just the latest version of each package,
